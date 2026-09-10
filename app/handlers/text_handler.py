@@ -141,11 +141,10 @@ def _handle_llm(user_id: str, text: str):
     from app.services.llm import chat
     try:
         result = chat(text, _build_context(user_id))
-    except Exception:
+    except Exception as exc:
         logger.exception("LLM call failed")
         return TextSendMessage(text=(
-            "AI応答に失敗しました。少し待って再送するか、\n"
-            "『朝 食パン100g 250kcal』形式で直接記録してください"
+            f"⚠ AIデバッグ: {type(exc).__name__}: {str(exc)[:200]}"
         ))
 
     intent = result.get("intent", "chat")
