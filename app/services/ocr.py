@@ -55,7 +55,7 @@ OCR_PROMPT = """\
 def extract_label(image_bytes: bytes, mime_type: str = "image/jpeg") -> str:
     """Gemini へ画像解析を依頼し、レスポンス本文(JSON文字列)を返す (同期版).
 
-    503/429 は最大3回リトライ。関数名は後方互換のため extract_label のまま。
+    503/429/ReadTimeout は最大3回リトライ。関数名は後方互換のため extract_label のまま。
     """
     if settings.OCR_BACKEND != "gemini":
         raise NotImplementedError(
@@ -63,7 +63,11 @@ def extract_label(image_bytes: bytes, mime_type: str = "image/jpeg") -> str:
         )
 
     api_key = settings.GEMINI_API_KEY
-      try:
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY not set in environment")
+
+    # 画像を長辺1280pxに縮小 (無料枠Flashの応答速度改善)
+    try:
         from io import BytesIO
         from PIL import Image
         img = Image.open(BytesIO(image_bytes))
@@ -73,10 +77,9 @@ def extract_label(image_bytes: bytes, mime_type: str = "image/jpeg") -> str:
             buf = BytesIO()
             img.convert("RGB").save(buf, format="JPEG", quality=85)
             image_bytes = buf.getvalue()
+            mime_type = "image/jpeg"
     except Exception:
         pass  # 縮小失敗時は元画像で続行
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY not set in environment")
 
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
@@ -101,7 +104,7 @@ def extract_label(image_bytes: bytes, mime_type: str = "image/jpeg") -> str:
     last_exc = None
     for attempt in range(3):
         try:
-            with httpx.Client(timeout=180.0) as cli:
+            with httpx.Client(timeout=75.0) as cli:
                 r = cli.post(url, json=payload)
                 if r.status_code in (429, 503):
                     time.sleep(2 * (attempt + 1))
@@ -116,11 +119,5 @@ def extract_label(image_bytes: bytes, mime_type: str = "image/jpeg") -> str:
             time.sleep(2 * (attempt + 1))
         except (httpx.ReadTimeout, httpx.ConnectTimeout) as e:
             last_exc = e
-            time.sleep(2 * (attempt + 1))
-        except (httpx.ReadTimeout, httpx.ConnectTimeout) as e:
-            last_exc = e
             time.sleep(3 * (attempt + 1))
-
     raise last_exc or RuntimeError("Gemini image API retry exhausted")
-  
-
