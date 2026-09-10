@@ -113,16 +113,23 @@ def fetch_day_summary(user_id: str, date: str) -> Dict[str, Any]:
 
 def fetch_recent_history(user_id: str, days: int = 7) -> List[Dict[str, Any]]:
     with get_conn() as c:
-        rows = c.execute("""
-            SELECT e.date,
-                   COALESCE(SUM(e.kcal),0) AS intake_kcal,
-                   COALESCE(a.total_kcal,0) AS consumed_kcal
-            FROM (SELECT DISTINCT date FROM entries WHERE user_id=?
-                  UNION SELECT date FROM activity WHERE user_id=?) e
-            LEFT JOIN entries e ON e.user_id=? AND e.date=e.date
-            LEFT JOIN activity a ON a.user_id=? AND a.date=e.date
-            GROUP BY e.date ORDER BY e.date DESC LIMIT ?
-        """, (user_id, user_id, user_id, user_id, days)).fetchall()
+        rows = c.execute(
+            """
+            SELECT d.date,
+                   COALESCE((SELECT SUM(kcal) FROM entries
+                              WHERE user_id=:uid AND date=d.date), 0) AS intake_kcal,
+                   COALESCE((SELECT total_kcal FROM activity
+                              WHERE user_id=:uid AND date=d.date), 0) AS consumed_kcal
+            FROM (
+                SELECT date FROM entries  WHERE user_id=:uid
+                UNION
+                SELECT date FROM activity WHERE user_id=:uid
+            ) d
+            ORDER BY d.date DESC
+            LIMIT :days
+            """,
+            {"uid": user_id, "days": days},
+        ).fetchall()
     return [
         {"date": r["date"],
          "intake_kcal": r["intake_kcal"],
@@ -130,3 +137,4 @@ def fetch_recent_history(user_id: str, days: int = 7) -> List[Dict[str, Any]]:
          "deficit_kcal": r["consumed_kcal"] - r["intake_kcal"]}
         for r in rows
     ]
+
