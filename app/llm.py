@@ -12,6 +12,7 @@ import json
 import logging
 import re
 import time
+
 import httpx
 
 from app.config import settings
@@ -19,7 +20,7 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 # モデル名のフォールバック順 (新しい/軽量/旧世代)
-# Render側で503や404が出たときに次候補へ自動切替。
+# 429/503/404 が出たときに次候補へ自動切替。
 MODEL_PRIMARY = "gemini-flash-latest"
 MODEL_FALLBACKS = [
     "gemini-flash-lite-latest",
@@ -84,7 +85,7 @@ def _build_user_message(user_message: str, context: dict) -> str:
 def _post_with_fallback(payload: dict, timeout: float = 30.0) -> dict:
     """MODEL_PRIMARY → FALLBACKS の順に試し、最初に成功したものを返す.
 
-    429 / 503 / ReadTimeout は次のモデル候補へ。404 はそのモデル名が存在しないため次へ。
+    404 はそのモデル名が存在しないため次へ。429/503/タイムアウトも次へ。
     """
     api_key = settings.GEMINI_API_KEY
     if not api_key:
@@ -158,8 +159,8 @@ def estimate_foods_batch(items: list) -> list:
     items: [{"date": "2026-09-01", "meal_slot": "breakfast",
              "food_name": "食パン", "quantity_g": 100.0 or None, "kcal": 0.0}, ...]
     戻り値: items と同じ並び。各要素に kcal/protein_g/fat_g/
-            carb_g/salt_g が補完される。1件でも推定失敗したら例外を投げ、
-            呼び出し側で per-item 個別推定にフォールバックする。
+            carb_g/salt_g が補完される。
+    1件でも推定不能が残れば例外 → 呼び出し側で per-item にフォールバック。
     """
     lines = ["以下の食事記録の各行について、日本の一般的な食品成分値で"
              "栄養を推定してください。\n"]
@@ -202,12 +203,13 @@ def estimate_foods_batch(items: list) -> list:
 
 def estimate_food_single(item: dict) -> dict:
     """1件だけの栄養推定 (batch が落ちたときの per-item フォールバック)."""
+    q = f"{item.get('quantity_g', 0):.0f}g" if item.get("quantity_g") else "1人前"
     payload = {
         "contents": [{
             "parts": [{
                 "text": (
-                    f"「{item['food_name']}」({item.get('quantity_g')}g or 1人前) "
-                    "の日本の一般的な栄養成分を推定し、次のJSONのみ返してください。"
+                    f"「{item['food_name']}」({q}) の日本の一般的な栄養成分を推定し、"
+                    "次のJSONのみ返してください。"
                     '{"kcal": 数値, "protein_g": 数値, "fat_g": 数値, '
                     '"carb_g": 数値, "salt_g": 数値}'
                 )
@@ -224,4 +226,6 @@ def estimate_food_single(item: dict) -> dict:
     for k in ("kcal", "protein_g", "fat_g", "carb_g", "salt_g"):
         if data.get(k) is not None:
             item[k] = float(data[k])
+    if (item.get("kcal") or 0.0) <= 0:
+        raise ValueError(f"no kcal estimated for {item.get('food_name')}")
     return item
