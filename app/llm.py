@@ -12,7 +12,6 @@ import json
 import logging
 import re
 import time
-
 import httpx
 
 from app.config import settings
