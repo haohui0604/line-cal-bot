@@ -120,6 +120,14 @@ def fetch_day_summary(user_id: str, date: str) -> Dict[str, Any]:
         "salt_g": r["salt_g"],
     }
 
+def fetch_today_food_names(user_id: str, date: str) -> List[str]:
+    """当日に記録済みの食品名リスト (LLMコンテキスト用)."""
+    with get_conn() as c:
+        rows = c.execute(
+            "SELECT food_name FROM entries WHERE user_id=? AND date=? ORDER BY id",
+            (user_id, date),
+        ).fetchall()
+    return [r["food_name"] for r in rows]
 
 def fetch_recent_history(user_id: str, days: int = 7) -> List[Dict[str, Any]]:
     with get_conn() as c:
