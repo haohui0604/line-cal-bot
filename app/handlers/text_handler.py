@@ -46,7 +46,7 @@ MODIFY_PAT = re.compile(
 # 修正コマンドの複数候補からの番号選択
 MODIFY_CONFIRM_PAT = re.compile(r"^修正候補\s+(\d+)\s*$")
 
-# 「牛丼 9/9 昼 1020kcal」のような末尾日付+スロット指定の LLM 記録用
+# 「牛丼 9/9 昼 1020kcal」のような末尾日付+スロット指定の記録用
 TRAILING_DATE_SLOT_PAT = re.compile(
     r"^(?P<food>.+?)\s+"
     r"(?P<mo>\d{1,2})/(?P<d>\d{1,2})\s+"
@@ -71,6 +71,7 @@ GREETINGS = {
 # LLM 推定の未確定レコード (Render 再起動で消える簡易実装)
 _pending: dict = {}           # user_id -> {"foods": [...], "meal_slot": str, "date": str}
 _modify_pending: dict = {}    # user_id -> {"candidates": [...], "new_kcal": float}
+_bulk_pending: dict = {}      # user_id -> {"rows": [parsed, ...]}
 
 
 def _today() -> str:
@@ -186,6 +187,95 @@ def handle_text(user_id: str, text: str):
             if text in ("いいえ", "やめる", "キャンセル"):
                 _modify_pending.pop(user_id)
                 return TextSendMessage(text="修正をキャンセルしました")
+
+        # 0.6) 一括登録モード
+        if text in ("一括", "一括登録", "import", "Import"):
+            _bulk_pending[user_id] = {"rows": []}
+            return TextSendMessage(text=(
+                "📥 一括登録モードです。1行1件で貼り付けてください\n"
+                "例:\n"
+                "9/1 朝 食パン 250kcal\n"
+                "9/1 昼 牛丼並盛 700kcal\n"
+                "9/1 夜 鶏むね150g\n\n"
+                "※ kcalが無い行はAIが推定して登録します\n"
+                "何度でも追送OK。終わったら「確定」、やめるときは「キャンセル」"
+            ))
+
+        if user_id in _bulk_pending:
+            if text in ("キャンセル", "やめる"):
+                _bulk_pending.pop(user_id)
+                return TextSendMessage(text="一括登録をキャンセルしました")
+            if text in ("確定", "はい"):
+                rows = _bulk_pending.pop(user_id)["rows"]
+                if not rows:
+                    return TextSendMessage(text="登録対象がありませんでした")
+
+                # kcal無し行をまとめてAI推定 (1回のAPI呼出)
+                need_estimate = [r for r in rows
+                                 if (r.get("kcal") or 0.0) <= 0]
+                if need_estimate:
+                    try:
+                        from app.services.llm import estimate_foods_batch
+                        estimate_foods_batch(need_estimate)
+                    except Exception:
+                        logger.exception("bulk estimate failed")
+
+                saved, failed = [], []
+                for r in rows:
+                    if (r.get("kcal") or 0.0) <= 0:
+                        failed.append(r)
+                        continue
+                    save_entry(
+                        user_id=user_id, date=r["date"],
+                        meal_slot=r["meal_slot"], food_name=r["food_name"],
+                        kcal=r["kcal"], protein_g=r.get("protein_g"),
+                        fat_g=r.get("fat_g"), carb_g=r.get("carb_g"),
+                        salt_g=r.get("salt_g"),
+                        quantity_g=r.get("quantity_g"),
+                        source_type="bulk_import", confidence="estimated",
+                    )
+                    saved.append(r)
+
+                from collections import Counter
+                cnt = Counter(r["date"] for r in saved)
+                breakdown = " / ".join(
+                    f"{d}:{n}件" for d, n in sorted(cnt.items()))
+                msg = f"✅ {len(saved)}件を一括登録しました（{breakdown}）"
+                if need_estimate:
+                    msg += f"\nうち {len(need_estimate)}件はAI推定です"
+                if failed:
+                    msg += (f"\n⚠ 推定失敗でスキップ {len(failed)}件:\n"
+                            + "\n".join(
+                                f"・{r['date']} {r['food_name']}"
+                                for r in failed[:5]))
+                return TextSendMessage(text=msg)
+
+            # モード中の入力 = 過去ログ行としてパース
+            added, skipped = [], []
+            for line in text.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                m2 = DATE_PAT.match(line)
+                body2 = line[m2.end():].strip() if m2 else line
+                p2 = parse_record_line(body2)
+                if p2 is not None:
+                    p2["date"] = _norm_date(m2.groups() if m2 else None)
+                    added.append(p2)
+                else:
+                    skipped.append(line)
+            _bulk_pending[user_id]["rows"].extend(added)
+            no_kcal = sum(1 for r in added if (r.get("kcal") or 0.0) <= 0)
+            msg = (f"📥 読み取り: {len(added)}件"
+                   f"（累計 {len(_bulk_pending[user_id]['rows'])}件")
+            if no_kcal:
+                msg += f"、うち{no_kcal}件はAI推定予定"
+            msg += "）"
+            if skipped:
+                msg += (f"\n⚠ 解釈不能でスキップ{len(skipped)}件:\n"
+                        + "\n".join(f"・{s[:30]}" for s in skipped[:5]))
+            msg += "\n追加するか「確定」で登録"
+            return TextSendMessage(text=msg)
 
         # 1) 挨拶
         if text in GREETINGS:
@@ -355,7 +445,7 @@ def handle_text(user_id: str, text: str):
             lines.append("例: 『修正候補 1』 / キャンセル: 『いいえ』")
             return TextSendMessage(text="\n".join(lines))
 
-        # 9) 末尾日付付きの食事記録 (LLM 経由・日付保持)
+        # 9) 末尾日付付きの食事記録 (確認フロー・日付保持)
         m = TRAILING_DATE_SLOT_PAT.match(text) or TRAILING_DATE_PAT.match(text)
         if m:
             food = m.group("food").strip()
