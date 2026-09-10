@@ -89,7 +89,7 @@ def extract_label(image_bytes: bytes, mime_type: str = "image/jpeg") -> str:
     last_exc = None
     for attempt in range(3):
         try:
-            with httpx.Client(timeout=45.0) as cli:
+            with httpx.Client(timeout=60.0) as cli:
                 r = cli.post(url, json=payload)
                 if r.status_code in (429, 503):
                     time.sleep(2 * (attempt + 1))
@@ -102,4 +102,8 @@ def extract_label(image_bytes: bytes, mime_type: str = "image/jpeg") -> str:
             if e.response.status_code not in (429, 503):
                 raise
             time.sleep(2 * (attempt + 1))
+        except (httpx.ReadTimeout, httpx.ConnectTimeout) as e:
+            last_exc = e
+            time.sleep(2 * (attempt + 1))
     raise last_exc or RuntimeError("Gemini image API retry exhausted")
+
