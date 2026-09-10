@@ -1,105 +1,108 @@
-"""Gemini マルチモーダル解析 (成分表OCR + 食べ物写真の推定).
+"""画像 → Gemini 解析 (成分表OCR / 食べ物写真推定) → DB保存.
 
-- 栄養成分表の写真 → 数値を厳密に読み取り (mode=label)
-- 料理・食べ物の写真 → 見た目から品目と栄養を推定 (mode=photo)
-
-呼び出し側 (image_handler) は同期なので、本モジュールも同期実装。
+動作:
+- mode=label (成分表): confidence=confirmed → 即時DB保存
+- mode=photo (料理写真): confidence=estimated → 推定値を提示し、
+  「はい」でDB保存 (text_handler の _pending と同一の仕組みを利用)
 """
-import base64
+import json
 import logging
-import time
+import re
+from datetime import date
 
-import httpx
+from linebot.models import TextSendMessage
 
-from app.config import settings
+from app.services.ocr import extract_label
+from app.services.db import save_entry
 
 logger = logging.getLogger(__name__)
 
-MODEL = "gemini-flash-latest"
 
-OCR_PROMPT = """\
-あなたは食事画像の解析アシスタントです。送信された画像は
-(A) 食品パッケージの栄養成分表、または (B) 料理・食べ物そのもの のどちらかです。
+def handle_image(user_id: str, message_id: str, line_bot_api):
+    try:
+        content = line_bot_api.get_message_content(message_id)
+        image_bytes = b"".join(content.iter_content())
+        mime = getattr(content, "content_type", None) or "image/jpeg"
+        label = extract_label(image_bytes, mime_type=mime)
+    except Exception as e:
+        logger.exception("image analysis failed")
+        return TextSendMessage(text=(
+            f"画像の解析に失敗しました ({type(e).__name__})。\n"
+            "少し待って再送するか、『朝 食パン100g 250kcal』形式で"
+            "直接記録してください"
+        ))
 
-まず画像がどちらかを判断し、以下のJSONだけを返してください
-(説明文・コードフェンスは不要)。
+    try:
+        text = label if isinstance(label, str) else json.dumps(label, ensure_ascii=False)
+        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(),
+                      flags=re.MULTILINE)
+        m = re.search(r"\{.*\}", text, flags=re.DOTALL)
+        data = json.loads(m.group(0) if m else text)
+    except (json.JSONDecodeError, TypeError):
+        return TextSendMessage(text="解析結果の読み取りに失敗しました。もう一度撮り直して送ってください")
 
-{
-  "mode": "label" | "photo",
-  "name": "食品名または商品名",
-  "kcal": 数値,
-  "protein_g": 数値,
-  "fat_g": 数値,
-  "carb_g": 数値,
-  "salt_g": 数値,
-  "quantity_g": 数値またはnull,
-  "brand": "ブランド名 (labelの場合のみ。不明ならnull)",
-  "confidence": "confirmed" | "estimated",
-  "reaction": "食事への短いポジティブな一言 (photoの場合のみ、40字以内)"
-}
+    mode = data.get("mode") or "photo"
 
-ルール:
-- (A) 成分表の場合: mode=label, confidence=confirmed。
-  表記単位(100g当たり/1食当たり/1個当たり)を厳密に守って数値を読み取る。
-  1食当たり表記なら quantity_g にその量が分かれば入れる。
-  読み取れない項目は null。
-- (B) 食べ物の写真の場合: mode=photo, confidence=estimated。
-  写っている料理を具体的に特定し(例: 「天ぷらうどん」)、
-  日本の一般的な食品成分値で妥当な中央値を必ず数値で入れる。
-  quantity_g は一般的な1人前の量。
-  brand は null。
-- 食事に無関係な画像の場合: mode=photo, name="不明", kcal=0 として返す。
-"""
+    # 食事に無関係と判断された画像
+    if (data.get("kcal") in (0, None)) and data.get("name") in ("不明", None):
+        return TextSendMessage(text=(
+            "食事の画像として認識できませんでした。\n"
+            "料理の写真、または栄養成分表の写真を送ってください"
+        ))
 
-
-def extract_label(image_bytes: bytes, mime_type: str = "image/jpeg") -> str:
-    """Gemini へ画像解析を依頼し、レスポンス本文(JSON文字列)を返す (同期版).
-
-    503/429 は最大3回リトライ。関数名は後方互換のため extract_label のまま。
-    """
-    if settings.OCR_BACKEND != "gemini":
-        raise NotImplementedError(
-            f"OCR back-end {settings.OCR_BACKEND} not implemented"
+    if mode == "label":
+        # 成分表: 数値は表記からの厳密な読み取り → 即時保存
+        save_entry(
+            user_id=user_id,
+            date=date.today().isoformat(),
+            meal_slot="snack",
+            food_name=data.get("name") or data.get("brand") or "未名",
+            kcal=float(data.get("kcal") or 0),
+            protein_g=data.get("protein_g"),
+            fat_g=data.get("fat_g"),
+            carb_g=data.get("carb_g"),
+            salt_g=data.get("salt_g"),
+            quantity_g=data.get("quantity_g"),
+            source_type="ocr_label",
+            confidence="confirmed",
+            linked_image_url=None,
+            note=f"brand={data.get('brand')}" if data.get("brand") else None,
         )
+        return TextSendMessage(text=_make_label_reply(data))
 
-    api_key = settings.GEMINI_API_KEY
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY not set in environment")
+    # mode == photo: 推定値 → 確認フロー (text_handler と同じ _pending を共有)
+    from app.handlers.text_handler import _pending
+    foods = [{
+        "name": data.get("name") or "不明",
+        "kcal": float(data.get("kcal") or 0),
+        "protein_g": data.get("protein_g"),
+        "fat_g": data.get("fat_g"),
+        "carb_g": data.get("carb_g"),
+        "salt_g": data.get("salt_g"),
+        "quantity_g": data.get("quantity_g"),
+    }]
+    _pending[user_id] = {"foods": foods, "meal_slot": "snack"}
 
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{MODEL}:generateContent?key={api_key}"
+    reaction = (data.get("reaction") or "").strip()
+    lines = []
+    if reaction:
+        lines += [reaction, ""]
+    f = foods[0]
+    lines.append("写真からのAI推定 (記録前の確認):")
+    lines.append(
+        f"・{f['name']} {f['kcal']:.0f}kcal"
+        f" (P{f.get('protein_g','?')} F{f.get('fat_g','?')}"
+        f" C{f.get('carb_g','?')} 食塩{f.get('salt_g','?')}g)"
     )
-    payload = {
-        "contents": [{
-            "parts": [
-                {"text": OCR_PROMPT},
-                {"inline_data": {
-                    "mime_type": mime_type,
-                    "data": base64.b64encode(image_bytes).decode("ascii"),
-                }},
-            ],
-        }],
-        "generationConfig": {
-            "response_mime_type": "application/json",
-            "temperature": 0.2,
-        },
-    }
+    lines += ["", "この内容で記録しますか？ →「はい」/「いいえ」"]
+    return TextSendMessage(text="\n".join(lines))
 
-    last_exc = None
-    for attempt in range(3):
-        try:
-            with httpx.Client(timeout=45.0) as cli:
-                r = cli.post(url, json=payload)
-                if r.status_code in (429, 503):
-                    time.sleep(2 * (attempt + 1))
-                    continue
-                r.raise_for_status()
-                body = r.json()
-            return body["candidates"][0]["content"]["parts"][0]["text"]
-        except httpx.HTTPStatusError as e:
-            last_exc = e
-            if e.response.status_code not in (429, 503):
-                raise
-            time.sleep(2 * (attempt + 1))
-    raise last_exc or RuntimeError("Gemini image API retry exhausted")
+
+def _make_label_reply(d):
+    return (
+        f"✅ 成分表から記録: {d.get('name') or d.get('brand') or '未名'}\n"
+        f"   {d.get('kcal', '?')}kcal / "
+        f"P{d.get('protein_g', '?')} F{d.get('fat_g', '?')} "
+        f"C{d.get('carb_g', '?')} 食塩{d.get('salt_g', '?')}g\n"
+        f"   source=ocr_label / confidence=confirmed"
+    )
