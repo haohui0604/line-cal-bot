@@ -143,8 +143,9 @@ def _handle_llm(user_id: str, text: str):
         result = chat(text, _build_context(user_id))
     except Exception as exc:
         logger.exception("LLM call failed")
+        safe = str(exc).split("?key=", 1)[0]  # キーが混入していても切る
         return TextSendMessage(text=(
-            f"⚠ AIデバッグ: {type(exc).__name__}: {str(exc)[:200]}"
+            f"⚠ AIデバッグ: {type(exc).__name__}: {safe[:200]}"
         ))
 
     intent = result.get("intent", "chat")
