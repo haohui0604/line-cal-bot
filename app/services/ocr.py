@@ -63,6 +63,18 @@ def extract_label(image_bytes: bytes, mime_type: str = "image/jpeg") -> str:
         )
 
     api_key = settings.GEMINI_API_KEY
+      try:
+        from io import BytesIO
+        from PIL import Image
+        img = Image.open(BytesIO(image_bytes))
+        if max(img.size) > 1280:
+            ratio = 1280 / max(img.size)
+            img = img.resize((int(img.width * ratio), int(img.height * ratio)))
+            buf = BytesIO()
+            img.convert("RGB").save(buf, format="JPEG", quality=85)
+            image_bytes = buf.getvalue()
+    except Exception:
+        pass  # 縮小失敗時は元画像で続行
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY not set in environment")
 
@@ -89,7 +101,7 @@ def extract_label(image_bytes: bytes, mime_type: str = "image/jpeg") -> str:
     last_exc = None
     for attempt in range(3):
         try:
-            with httpx.Client(timeout=60.0) as cli:
+            with httpx.Client(timeout=180.0) as cli:
                 r = cli.post(url, json=payload)
                 if r.status_code in (429, 503):
                     time.sleep(2 * (attempt + 1))
@@ -105,5 +117,10 @@ def extract_label(image_bytes: bytes, mime_type: str = "image/jpeg") -> str:
         except (httpx.ReadTimeout, httpx.ConnectTimeout) as e:
             last_exc = e
             time.sleep(2 * (attempt + 1))
+        except (httpx.ReadTimeout, httpx.ConnectTimeout) as e:
+            last_exc = e
+            time.sleep(3 * (attempt + 1))
+
     raise last_exc or RuntimeError("Gemini image API retry exhausted")
+  
 
