@@ -22,11 +22,7 @@ def get_conn():
 
 
 def init_db():
-    """migrations/*.sql をファイル名順(001→002→…)に冪等適用する.
-
-    全SQLは CREATE TABLE IF NOT EXISTS なので、起動のたびに流しても安全。
-    新しいテーブルは migrations/ に .sql を追加するだけで適用される。
-    """
+    """migrations/*.sql をファイル名順(001→002→…)に冪等適用する."""
     import glob
     mig_dir = Path(__file__).resolve().parents[2] / "migrations"
     files = sorted(glob.glob(str(mig_dir / "*.sql")))
@@ -203,9 +199,8 @@ def update_entry_kcal(*, user_id: str, entry_id: Optional[int] = None,
                       new_kcal: float) -> bool:
     """entries の kcal を更新する.
 
-    entry_id が指定されていればそれで一意に更新。
-    そうでなければ (date, meal_slot, food_name) で一致するものを更新。
-    戻り値: 更新できたら True、該当なしなら False。
+    entry_id 指定なら一意に更新。そうでなければ完全一致 (date, meal_slot,
+    food_name) で更新。戻り値: 更新できたら True。
     """
     with get_conn() as c:
         if entry_id is not None:
@@ -224,21 +219,25 @@ def update_entry_kcal(*, user_id: str, entry_id: Optional[int] = None,
 
 
 def find_entry_candidates(*, user_id: str, date: str,
-                          meal_slot: Optional[str] = None) -> List[Dict[str, Any]]:
-    """指定日のエントリ候補を返す (修正コマンドの曖昧解消用)."""
+                          meal_slot: Optional[str] = None,
+                          food_name_like: Optional[str] = None,
+                          ) -> List[Dict[str, Any]]:
+    """修正コマンドの候補検索.
+
+    food_name_like 指定時は部分一致 (LIKE %...%)。
+    部分一致で0件の場合は呼び出し側で日付のみの再検索を想定。
+    """
+    sql = ("SELECT id, date, meal_slot, food_name, kcal"
+           " FROM entries WHERE user_id=? AND date=?")
+    params: list = [user_id, date]
+    if meal_slot:
+        sql += " AND meal_slot=?"
+        params.append(meal_slot)
+    if food_name_like:
+        sql += " AND (food_name LIKE ? OR ? LIKE '%' || food_name || '%')"
+        params.append(f"%{food_name_like}%")
+        params.append(food_name_like)
+    sql += " ORDER BY meal_slot, id"
     with get_conn() as c:
-        if meal_slot:
-            rows = c.execute(
-                "SELECT id, date, meal_slot, food_name, kcal"
-                " FROM entries WHERE user_id=? AND date=? AND meal_slot=?"
-                " ORDER BY id",
-                (user_id, date, meal_slot),
-            ).fetchall()
-        else:
-            rows = c.execute(
-                "SELECT id, date, meal_slot, food_name, kcal"
-                " FROM entries WHERE user_id=? AND date=?"
-                " ORDER BY meal_slot, id",
-                (user_id, date),
-            ).fetchall()
+        rows = c.execute(sql, params).fetchall()
     return [dict(r) for r in rows]
