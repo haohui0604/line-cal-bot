@@ -19,11 +19,21 @@ logger = logging.getLogger(__name__)
 
 
 def handle_image(user_id: str, message_id: str, line_bot_api):
+    import time as _time
+    content = None
+    for _attempt in range(3):
+        try:
+            content = line_bot_api.get_message_content(message_id)
+            image_bytes = b"".join(content.iter_content())
+            break
+        except Exception:
+            if _attempt == 2:
+                raise
+            _time.sleep(2)
     try:
-        content = line_bot_api.get_message_content(message_id)
-        image_bytes = b"".join(content.iter_content())
         mime = getattr(content, "content_type", None) or "image/jpeg"
         label = extract_label(image_bytes, mime_type=mime)
+
     except Exception as e:
         logger.exception("image analysis failed")
         return TextSendMessage(text=(
