@@ -11,7 +11,6 @@ DBには書き込まない。書き込みは呼び出し側 (text_handler) の�
 import json
 import logging
 import re
-import time
 
 import httpx
 
