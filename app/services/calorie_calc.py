@@ -1,32 +1,21 @@
 """テキスト → 食事レコード変換.
 
-本スレッドの食事ログ運用を移植。
 入力例:
-    '曜 ローローハン81g 食塩2.8g P7 F5.7 C59.2'
-    '朝 Milimホエイ25g'
-    '鶏の水炊き半分'
+    '朝 食パン100g 250kcal'
+    '昼食 牛丼並盛 700kcal'
+    '夜 鶏の水炊き半分 600kcal P40'
 """
 import re
 from typing import Dict, Optional
 
+# 2文字キーワードを先に評価する (「昼食」で「昼」だけ剥がれて
+# 食品名が「食 牛丼」になる事故を防ぐ)
 SLOT_KW = {
+    "朝食": "breakfast", "昼食": "lunch", "夕食": "dinner",
+    "夜食": "snack", "間食": "snack",
     "朝": "breakfast", "昼": "lunch", "夕": "dinner",
     "夜": "dinner", "間": "snack",
 }
-
-NUM = r"(\d+(?:\.\d+)?)"
-
-# kcal / P / F / C / 食塩 を明示するパターン
-RE = re.compile(
-    rf"(?P<name>[^\s]+(?:\s*[^\s]+)*?)"
-    rf"(?:\s*{NUM}g?)?"
-    rf"(?:\s*P{NUM}g?)?"
-    rf"(?:\s*F{NUM}g?)?"
-    rf"(?:\s*C{NUM}g?)?"
-    rf"(?:\s*食塩{NUM}g?)?"
-    rf"(?:\s*(?P<kcal>{NUM})\s*kcal)?",
-    re.IGNORECASE,
-)
 
 
 def parse_record_line(text: str) -> Optional[Dict]:
@@ -34,7 +23,9 @@ def parse_record_line(text: str) -> Optional[Dict]:
     text = text.strip()
     slot = None
     for k, v in SLOT_KW.items():
-        if text.startswith(k) or text.startswith(f"{k} "):
+        if text == k or text.startswith(k + " ") or (
+            len(text) > len(k) and text.startswith(k)
+        ):
             slot = v
             text = text[len(k):].strip()
             break
@@ -69,13 +60,12 @@ def parse_record_line(text: str) -> Optional[Dict]:
         salt = float(m_s.group(1))
         name = name.replace(m_s.group(0), "").strip()
 
-    # 末尾のグラム表記も name として吸収
+    # 末尾のグラム表記を量として吸収
     m_q = re.search(r"(\d+(?:\.\d+)?)\s*g\s*$", name)
     quantity = None
     if m_q:
         quantity = float(m_q.group(1))
         name = name[:m_q.start()].strip()
-    # 複数スペースを1つに圧縮
     name = re.sub(r"\s+", " ", name).strip()
 
     if not name:
