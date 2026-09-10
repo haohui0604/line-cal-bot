@@ -1,9 +1,10 @@
-"""画像 → Gemini 解析 (成分表/料理写真/体重計) → DB保存.
+"""画像 → Gemini 解析 (成分表/料理写真/体重計/消費カロリー) → DB保存.
 
 mode ごとの分岐:
-- mode=label  (成分表): confidence=confirmed → 即時DB保存 (entries)
-- mode=photo  (料理写真): confidence=estimated → 確認フロー (_pending 経由)
-- mode=weight (体重計): confidence=confirmed → 即時DB保存 (weight_logs)
+- mode=label    (成分表):   confidence=confirmed → 即時DB保存 (entries)
+- mode=photo    (料理写真): confidence=estimated → 確認フロー (_pending 経由)
+- mode=weight   (体重計):   confidence=confirmed → 即時DB保存 (weight_logs)
+- mode=activity (消費kcal): confidence=confirmed → 即時DB保存 (activity)
 """
 import json
 import logging
@@ -13,7 +14,7 @@ from datetime import date
 from linebot.models import TextSendMessage
 
 from app.services.ocr import extract_label
-from app.services.db import save_entry, save_weight
+from app.services.db import save_entry, save_weight, save_activity
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,7 @@ def handle_image(user_id: str, message_id: str, line_bot_api):
 
     mode = data.get("mode") or "photo"
 
+    # ---- 体重計 ----
     if mode == "weight":
         weight_kg = data.get("weight_kg")
         if not weight_kg:
@@ -60,12 +62,39 @@ def handle_image(user_id: str, message_id: str, line_bot_api):
         )
         return TextSendMessage(text=_make_weight_reply(data))
 
+    # ---- 消費カロリー (スマートウォッチ/ヘルスケア) ----
+    if mode == "activity":
+        total = data.get("total_burn_kcal")
+        active = data.get("active_kcal")
+        resting = data.get("resting_kcal")
+        if not total and not active:
+            return TextSendMessage(text=(
+                "消費カロリーの数値を読み取れませんでした。\n"
+                "総消費やアクティブエネルギーのkcalが映っている画面を送ってください"
+            ))
+        if not total:
+            total = (float(active or 0) + float(resting or 0)) or None
+        if total is None:
+            total = float(active)
+        save_activity(
+            user_id=user_id, date=date.today().isoformat(),
+            total_kcal=float(total),
+            active_kcal=float(active) if active else None,
+            resting_kcal=float(resting) if resting else None,
+            source_type="ocr_image",
+            ocr_image_url=None,
+        )
+        return TextSendMessage(text=_make_activity_reply(data))
+
+    # ---- 無関係画像ガード ----
     if (data.get("kcal") in (0, None)) and data.get("name") in ("不明", None):
         return TextSendMessage(text=(
-            "食事/体重計の画像として認識できませんでした。\n"
-            "料理の画像、栄養成分表、または体重計の写真を送ってください"
+            "食事/体重計/活動量の画像として認識できませんでした。\n"
+            "料理の写真、栄養成分表、体重計、または消費カロリー画面の"
+            "スクショを送ってください"
         ))
 
+    # ---- 成分表 ----
     if mode == "label":
         save_entry(
             user_id=user_id,
@@ -85,7 +114,7 @@ def handle_image(user_id: str, message_id: str, line_bot_api):
         )
         return TextSendMessage(text=_make_label_reply(data))
 
-    # mode=photo → 推定 → 確認フロー
+    # ---- 料理写真 → 推定 → 確認フロー ----
     from app.handlers.text_handler import _pending
     foods = [{
         "name": data.get("name") or "不明",
@@ -96,7 +125,8 @@ def handle_image(user_id: str, message_id: str, line_bot_api):
         "salt_g": data.get("salt_g"),
         "quantity_g": data.get("quantity_g"),
     }]
-    _pending[user_id] = {"foods": foods, "meal_slot": "snack"}
+    _pending[user_id] = {"foods": foods, "meal_slot": "snack",
+                         "date": date.today().isoformat()}
 
     reaction = (data.get("reaction") or "").strip()
     lines = []
@@ -135,6 +165,22 @@ def _make_weight_reply(d):
         extras.append(f"BMR {d['bmr_kcal']}kcal")
     extra_line = (" (" + " / ".join(extras) + ")") if extras else ""
     tail = "\n   source=ocr_image / confidence=confirmed"
+    if reaction:
+        return f"{reaction}\n{head}{extra_line}{tail}"
+    return f"{head}{extra_line}{tail}"
+
+
+def _make_activity_reply(d):
+    reaction = (d.get("reaction") or "").strip()
+    head = f"🏃 消費カロリーを記録: 総計 {float(d['total_burn_kcal']):.0f}kcal"
+    extras = []
+    if d.get("active_kcal"):
+        extras.append(f"活動 {d['active_kcal']:.0f}kcal")
+    if d.get("resting_kcal"):
+        extras.append(f"安静 {d['resting_kcal']:.0f}kcal")
+    extra_line = (" (" + " / ".join(extras) + ")") if extras else ""
+    tail = ("\n   source=ocr_image / confidence=confirmed\n"
+            "『集計』で摂取との収支を確認できます")
     if reaction:
         return f"{reaction}\n{head}{extra_line}{tail}"
     return f"{head}{extra_line}{tail}"
