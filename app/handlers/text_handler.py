@@ -15,7 +15,6 @@ from app.handlers.flex_builder import (
     summary_flex, weekly_chart_flex, monthly_summary_flex,
 )
 
-
 logger = logging.getLogger(__name__)
 
 DATE_PAT = re.compile(r"(?:(\d{1,2})\s*/\s*(\d{1,2}))?")
@@ -24,7 +23,7 @@ DATE_PAT = re.compile(r"(?:(\d{1,2})\s*/\s*(\d{1,2}))?")
 TARGET_KCAL_DEFAULT = 1800.0
 PROTEIN_TARGET_G = 100.0
 
-# パターン集
+# ---- パターン集 ----
 GOAL_PAT = re.compile(r"^目標(?:kcal)?\s*[:：]?\s*(\d+)")
 WEIGHT_PAT = re.compile(
     r"^体重\s+([0-9]+(?:\.[0-9]+)?)"
@@ -37,14 +36,30 @@ ACTIVITY_PAT = re.compile(
     r"(?:\s+(?:活動|active|ACTIVE)\s+([0-9]+))?"
     r"(?:\s+(?:安静|resting|RESTING|基礎代謝|basal)\s+([0-9]+))?"
 )
-# 修正コマンド: 「修正 9/9 昼 牛丼並盛 720kcal」
+# 修正: 「修正 9/9 昼 牛丼並盛 720」 / 「修正 9/9 牛丼 720」
 MODIFY_PAT = re.compile(
     r"^修正\s+(\d{1,2})/(\d{1,2})"
-    r"(?:\s+(朝|昼|夜|夜食|breakfast|lunch|dinner|snack))?"
-    r"\s+(\S+?)\s+(\d+(?:\.\d+)?)(?:\s*kcal)?$"
+    r"(?:\s+(朝食|昼食|夕食|夜食|間食|朝|昼|夜|夕|間))?"
+    r"\s+(\S+?)\s+(\d+(?:\.\d+)?)(?:\s*kcal)?\s*$",
+    re.IGNORECASE,
 )
-# 確認フロー用 (複数候補があった場合)
+# 修正コマンドの複数候補からの番号選択
 MODIFY_CONFIRM_PAT = re.compile(r"^修正候補\s+(\d+)\s*$")
+
+# 「牛丼 9/9 昼 1020kcal」のような末尾日付+スロット指定の LLM 記録用
+TRAILING_DATE_SLOT_PAT = re.compile(
+    r"^(?P<food>.+?)\s+"
+    r"(?P<mo>\d{1,2})/(?P<d>\d{1,2})\s+"
+    r"(?P<slot>朝食|昼食|夕食|夜食|間食|朝|昼|夜|夕|間)\s+"
+    r"(?P<kcal>\d+(?:\.\d+)?)\s*kcal\s*$",
+    re.IGNORECASE,
+)
+TRAILING_DATE_PAT = re.compile(
+    r"^(?P<food>.+?)\s+"
+    r"(?P<mo>\d{1,2})/(?P<d>\d{1,2})\s+"
+    r"(?P<kcal>\d+(?:\.\d+)?)\s*kcal\s*$",
+    re.IGNORECASE,
+)
 
 GREETINGS = {
     "おはよう":         "おはようございます！今日も記録頑張りましょう 🌅",
@@ -54,8 +69,7 @@ GREETINGS = {
 }
 
 # LLM 推定の未確定レコード (Render 再起動で消える簡易実装)
-_pending: dict = {}           # user_id -> {"foods": [...], "meal_slot": str}
-# 修正コマンドの複数候補確認用
+_pending: dict = {}           # user_id -> {"foods": [...], "meal_slot": str, "date": str}
 _modify_pending: dict = {}    # user_id -> {"candidates": [...], "new_kcal": float}
 
 
@@ -95,10 +109,12 @@ def _build_context(user_id: str) -> dict:
     }
 
 
-def _save_foods(user_id: str, foods: list, meal_slot: str) -> None:
+def _save_foods(user_id: str, foods: list, meal_slot: str,
+                rec_date: str = None) -> None:
+    d = rec_date or _today()
     for f in foods:
         save_entry(
-            user_id=user_id, date=_today(),
+            user_id=user_id, date=d,
             meal_slot=meal_slot or "snack",
             food_name=f.get("name") or "未名",
             kcal=float(f.get("kcal") or 0),
@@ -109,14 +125,13 @@ def _save_foods(user_id: str, foods: list, meal_slot: str) -> None:
         )
 
 
-def _slot_to_japanese(slot: str) -> str:
-    return {"breakfast": "朝食", "lunch": "昼食",
-            "dinner": "夕食", "snack": "間食"}.get(slot, slot)
-
-
 def _slot_to_english(slot: str) -> str:
-    return {"朝": "breakfast", "昼": "lunch",
-            "夜": "dinner", "夜食": "snack"}.get(slot, slot)
+    return {
+        "朝食": "breakfast", "朝": "breakfast",
+        "昼食": "lunch", "昼": "lunch",
+        "夕食": "dinner", "夜": "dinner", "夕": "dinner",
+        "夜食": "snack", "間食": "snack", "間": "snack",
+    }.get(slot, slot)
 
 
 def handle_text(user_id: str, text: str):
@@ -129,12 +144,13 @@ def handle_text(user_id: str, text: str):
                 "自由文 (例:『さっきラーメン食べた』) もOKです"
             ))
 
-        # 0) LLM 推定の確定/取消
+        # 0) LLM 推定の確定/取消 (pending は日付も保持)
         if user_id in _pending and text in (
             "はい", "うん", "記録", "ok", "OK", "Yes", "YES"
         ):
             p = _pending.pop(user_id)
-            _save_foods(user_id, p["foods"], p["meal_slot"])
+            _save_foods(user_id, p["foods"], p["meal_slot"],
+                        rec_date=p.get("date"))
             names = " / ".join(f.get("name", "?") for f in p["foods"])
             return TextSendMessage(text=(
                 f"✅ 記録しました: {names}\n"
@@ -146,7 +162,7 @@ def handle_text(user_id: str, text: str):
             _pending.pop(user_id)
             return TextSendMessage(text="記録をキャンセルしました")
 
-        # 0.5) 修正コマンドの複数候補からの選択
+        # 0.5) 修正コマンドの複数候補からの番号選択
         if user_id in _modify_pending:
             m = MODIFY_CONFIRM_PAT.match(text)
             if m:
@@ -199,16 +215,12 @@ def handle_text(user_id: str, text: str):
         if text in ("月次", "月間", "month", "Month"):
             rows = fetch_recent_history(user_id, days=30)
             tgt = _resolve_target_kcal(user_id, _today())
-            contents = [
-                monthly_summary_flex(rows, target_kcal=tgt),
-                weekly_chart_flex(rows, days=30, target_kcal=tgt),
-            ]
             return FlexSendMessage(
                 alt_text=f"直近30日 レポート (目標 {tgt:.0f}kcal)",
-                contents=contents,
+                contents=monthly_summary_flex(rows, target_kcal=tgt),
             )
 
-        # 5) 目標摂取カロリー (数字付きで設定 / 数字なしで表示)
+        # 5) 目標摂取カロリー
         m = GOAL_PAT.match(text)
         if m:
             kcal = float(m.group(1))
@@ -292,7 +304,6 @@ def handle_text(user_id: str, text: str):
             slot_en = _slot_to_english(slot_jp) if slot_jp else None
 
             if slot_en:
-                # meal_slot が指定されている場合は直接 UPDATE を試みる
                 updated = update_entry_kcal(
                     user_id=user_id, date=target_date,
                     meal_slot=slot_en, food_name=food_name,
@@ -303,15 +314,15 @@ def handle_text(user_id: str, text: str):
                         f"✅ 修正しました: {target_date} {slot_jp} {food_name}\n"
                         f"kcal: → {new_kcal:.0f}"
                     ))
-                # 一致しなかった場合は候補検索へ
+                # 完全一致で取れなかった → 部分一致候補検索へ
                 candidates = find_entry_candidates(
                     user_id=user_id, date=target_date,
-                    meal_slot=slot_en,
+                    meal_slot=slot_en, food_name_like=food_name,
                 )
             else:
-                # meal_slot 未指定 → その日の全スロットから候補検索
                 candidates = find_entry_candidates(
                     user_id=user_id, date=target_date,
+                    food_name_like=food_name,
                 )
 
             if not candidates:
@@ -331,7 +342,6 @@ def handle_text(user_id: str, text: str):
                     f"{c['food_name']}\n"
                     f"kcal: {c['kcal']:.0f} → {new_kcal:.0f}"
                 ))
-            # 複数候補 → 確認フロー
             _modify_pending[user_id] = {
                 "candidates": candidates,
                 "new_kcal": new_kcal,
@@ -345,7 +355,32 @@ def handle_text(user_id: str, text: str):
             lines.append("例: 『修正候補 1』 / キャンセル: 『いいえ』")
             return TextSendMessage(text="\n".join(lines))
 
-        # 9) ルールベース食事登録 (kcal 明記時のみ即保存)
+        # 9) 末尾日付付きの食事記録 (LLM 経由・日付保持)
+        m = TRAILING_DATE_SLOT_PAT.match(text) or TRAILING_DATE_PAT.match(text)
+        if m:
+            food = m.group("food").strip()
+            mo = int(m.group("mo")); d = int(m.group("d"))
+            kcal = float(m.group("kcal"))
+            slot_en = _slot_to_english(m.group("slot")) if m.groupdict().get("slot") else None
+            today = date.today()
+            y = today.year if today.month >= mo else today.year - 1
+            target_date = f"{y}-{mo:02d}-{d:02d}"
+            foods = [{"name": food, "kcal": kcal,
+                      "protein_g": None, "fat_g": None,
+                      "carb_g": None, "salt_g": None,
+                      "quantity_g": None}]
+            _pending[user_id] = {
+                "foods": foods,
+                "meal_slot": slot_en or "snack",
+                "date": target_date,
+            }
+            return TextSendMessage(text=(
+                f"{food} {kcal:.0f}kcal を {target_date} の"
+                f" {slot_en or 'snack'} として記録しますか？\n"
+                "→「はい」/「いいえ」"
+            ))
+
+        # 10) ルールベース食事登録 (kcal 明記時のみ即保存)
         m = DATE_PAT.match(text)
         body = text[m.end():].strip() if m else text
         parsed = parse_record_line(body)
@@ -386,7 +421,11 @@ def _handle_llm(user_id: str, text: str):
     if intent == "record" and result.get("foods"):
         foods = result["foods"]
         slot = result.get("meal_slot") or "snack"
-        _pending[user_id] = {"foods": foods, "meal_slot": slot}
+        _pending[user_id] = {
+            "foods": foods,
+            "meal_slot": slot,
+            "date": _today(),
+        }
         total_kcal = sum(float(f.get("kcal") or 0) for f in foods)
         lines = []
         if reaction:
