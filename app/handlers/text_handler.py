@@ -235,6 +235,7 @@ def handle_text(user_id: str, text: str):
             ))
 
         if user_id in _bulk_pending:
+        if user_id in _bulk_pending:
             if text in ("キャンセル", "やめる"):
                 _bulk_pending.pop(user_id)
                 return TextSendMessage(text="一括登録をキャンセルしました")
@@ -243,21 +244,41 @@ def handle_text(user_id: str, text: str):
                 if not rows:
                     return TextSendMessage(text="登録対象がありませんでした")
 
-                # kcal無し行をまとめてAI推定 (1回のAPI呼出)
+                # --------------------------------------------------
+                # kcal 無し行の推定: まず batch → 失敗時に per-item
+                # --------------------------------------------------
                 need_estimate = [r for r in rows
                                  if (r.get("kcal") or 0.0) <= 0]
+                already_known = [r for r in rows
+                                 if (r.get("kcal") or 0.0) > 0]
+
                 if need_estimate:
                     try:
                         from app.services.llm import estimate_foods_batch
-                        estimate_foods_batch(need_estimate)
+                        need_estimate = estimate_foods_batch(need_estimate)
                     except Exception:
-                        logger.exception("bulk estimate failed")
+                        logger.exception("batch estimate failed, "
+                                         "falling back to per-item")
+                        from app.services.llm import estimate_food_single
+                        survived = []
+                        for it in need_estimate:
+                            try:
+                                survived.append(estimate_food_single(it))
+                            except Exception:
+                                logger.exception(
+                                    "per-item estimate failed: %s",
+                                    it.get("food_name"))
+                        need_estimate = survived
 
-                saved, failed = [], []
-                for r in rows:
-                    if (r.get("kcal") or 0.0) <= 0:
-                        failed.append(r)
-                        continue
+                # --------------------------------------------------
+                # 保存: 推定成功したものだけ、kcal あるものだけ
+                # --------------------------------------------------
+                savable = already_known + [r for r in need_estimate
+                                           if (r.get("kcal") or 0.0) > 0]
+                failed = [r for r in rows if r not in savable]
+
+                saved_count = 0
+                for r in savable:
                     save_entry(
                         user_id=user_id, date=r["date"],
                         meal_slot=r["meal_slot"], food_name=r["food_name"],
@@ -267,23 +288,46 @@ def handle_text(user_id: str, text: str):
                         quantity_g=r.get("quantity_g"),
                         source_type="bulk_import", confidence="estimated",
                     )
-                    saved.append(r)
+                    saved_count += 1
+
+                # --------------------------------------------------
+                # 結果表示: 矛盾しない件数
+                # --------------------------------------------------
+                ai_ok = sum(1 for r in savable if r not in already_known)
+                manual = len(already_known)
 
                 from collections import Counter
-                cnt = Counter(r["date"] for r in saved)
+                cnt = Counter(r["date"] for r in savable)
                 breakdown = " / ".join(
                     f"{d}:{n}件" for d, n in sorted(cnt.items()))
-                msg = f"✅ {len(saved)}件を一括登録しました（{breakdown}）"
-                if need_estimate:
-                    msg += f"\nうち {len(need_estimate)}件はAI推定です"
+
+                if saved_count == 0:
+                    lines = ["⚠ 1件も登録できませんでした"]
+                    if manual == 0 and need_estimate:
+                        lines.append("AI推定が全て失敗しました (Gemini混雑)")
+                    if failed:
+                        lines.append("該当行にkcalを明記して再送してください:")
+                        for r in failed[:5]:
+                            lines.append(
+                                f"・{r['date']} {r['meal_slot']} "
+                                f"{r['food_name']}")
+                    return TextSendMessage(text="\n".join(lines))
+
+                msg = f"✅ {saved_count}件登録 ({breakdown})\n"
+                msg += f"   内訳: kcal明記 {manual}件 / AI推定 {ai_ok}件"
                 if failed:
-                    msg += (f"\n⚠ 推定失敗でスキップ {len(failed)}件:\n"
-                            + "\n".join(
-                                f"・{r['date']} {r['food_name']}"
-                                for r in failed[:5]))
+                    msg += (
+                        f"\n⚠ 推定失敗でスキップ {len(failed)}件:\n"
+                        + "\n".join(
+                            f"・{r['date']} {r['meal_slot']} {r['food_name']}"
+                            for r in failed[:5])
+                    )
+                    if len(failed) > 5:
+                        msg += f"  …他 {len(failed) - 5}件"
                 return TextSendMessage(text=msg)
 
-            # モード中の入力 = 過去ログ行としてパース
+            # モード中の入力 = 過去ログ行としてパース  ← この行以降は既存のまま
+
             added, skipped = [], []
             for line in text.splitlines():
                 line = line.strip()
