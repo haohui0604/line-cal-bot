@@ -108,17 +108,12 @@ def handle_text(user_id: str, text: str):
         if text == "グラフ":
             return TextSendMessage(text="グラフ機能は chart_gen.py を参照してください")
 
+        # 5) ルールベース食事登録 (厳密形式, kcal明記時のみ即保存)
+        #    kcal未記載ならガードせず自由文としてLLM推定に流す
         m = DATE_PAT.match(text)
         body = text[m.end():].strip() if m else text
         parsed = parse_record_line(body)
-        if parsed is not None:
-            kcal = parsed.get("kcal") or 0.0
-            if kcal <= 0:
-                return TextSendMessage(text=(
-                    f"栄養情報が不足しています。\n"
-                    f"食品: {parsed['food_name']} (区分: {parsed['meal_slot']})\n"
-                    f"kcalを付けるか、自由文で送るとAIが推定します"
-                ))
+        if parsed is not None and (parsed.get("kcal") or 0.0) > 0:
             d = _norm_date(m.groups() if m else None)
             save_entry(
                 user_id=user_id, date=d,
