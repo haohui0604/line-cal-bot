@@ -1,33 +1,66 @@
-"""Gemini 2.0 Flash へのマルチモーダル OCR 依頼."""
+"""Gemini マルチモーダル解析 (成分表OCR + 食べ物写真の推定).
+
+- 栄養成分表の写真 → 数値を厳密に読み取り (mode=label)
+- 料理・食べ物の写真 → 見た目から品目と栄養を推定 (mode=photo)
+
+呼び出し側 (image_handler) は同期なので、本モジュールも同期実装。
+"""
 import base64
 import logging
+import time
+
 import httpx
+
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+MODEL = "gemini-flash-latest"
+
 OCR_PROMPT = """\
-あなたは栄養成分ラベル読取アシスタントです。
-画像内の栄養成分表示の数値を厳密に読み取り、以下の JSON 形式で返してください。
-    {
-      "name": "商品名(不明なら null)",
-      "kcal": 数値(エネルギー/熱量 kcal/100g当たり または1食当たりどちらか明確に),
-      "protein_g": 数値,
-      "fat_g": 数値,
-      "carb_g": 数値,
-      "salt_g": 食塩相当量(数値),
-      "quantity_g": 1食分のグラム数(数値, 不明なら null),
-      "brand": "商品名/ブランド(不明なら null)"
-    }
-該当する値が画像内で見つからない項目は null を返してください。
-数値以外にも単位が書いたもの(例: µg, mg)は信頼できる単位で記載。
-JSON以外の説明は不要。"""
+あなたは食事画像の解析アシスタントです。送信された画像は
+(A) 食品パッケージの栄養成分表、または (B) 料理・食べ物そのもの のどちらかです。
+
+まず画像がどちらかを判断し、以下のJSONだけを返してください
+(説明文・コードフェンスは不要)。
+
+{
+  "mode": "label" | "photo",
+  "name": "食品名または商品名",
+  "kcal": 数値,
+  "protein_g": 数値,
+  "fat_g": 数値,
+  "carb_g": 数値,
+  "salt_g": 数値,
+  "quantity_g": 数値またはnull,
+  "brand": "ブランド名 (labelの場合のみ。不明ならnull)",
+  "confidence": "confirmed" | "estimated",
+  "reaction": "食事への短いポジティブな一言 (photoの場合のみ、40字以内)"
+}
+
+ルール:
+- (A) 成分表の場合: mode=label, confidence=confirmed。
+  表記単位(100g当たり/1食当たり/1個当たり)を厳密に守って数値を読み取る。
+  1食当たり表記なら quantity_g にその量が分かれば入れる。
+  読み取れない項目は null。
+- (B) 食べ物の写真の場合: mode=photo, confidence=estimated。
+  写っている料理を具体的に特定し(例: 「天ぷらうどん」)、
+  日本の一般的な食品成分値で妥当な中央値を必ず数値で入れる。
+  quantity_g は一般的な1人前の量。
+  brand は null。
+- 食事に無関係な画像の場合: mode=photo, name="不明", kcal=0 として返す。
+"""
 
 
-async def extract_label(image_bytes: bytes) -> str:
-    """Gemini 2.0 Flash へ OCR。レスポンス本文(JSON文字列)を返す."""
+def extract_label(image_bytes: bytes, mime_type: str = "image/jpeg") -> str:
+    """Gemini へ画像解析を依頼し、レスポンス本文(JSON文字列)を返す (同期版).
+
+    503/429 は最大3回リトライ。関数名は後方互換のため extract_label のまま。
+    """
     if settings.OCR_BACKEND != "gemini":
-        raise NotImplementedError(f"OCR back-end {settings.OCR_BACKEND} not implemented")
+        raise NotImplementedError(
+            f"OCR back-end {settings.OCR_BACKEND} not implemented"
+        )
 
     api_key = settings.GEMINI_API_KEY
     if not api_key:
@@ -35,22 +68,38 @@ async def extract_label(image_bytes: bytes) -> str:
 
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-2.0-flash:generateContent?key={api_key}"
+        f"{MODEL}:generateContent?key={api_key}"
     )
     payload = {
         "contents": [{
             "parts": [
                 {"text": OCR_PROMPT},
                 {"inline_data": {
-                    "mime_type": "image/jpeg",
+                    "mime_type": mime_type,
                     "data": base64.b64encode(image_bytes).decode("ascii"),
                 }},
             ],
         }],
-        "generationConfig": {"response_mime_type": "application/json", "temperature": 0.0},
+        "generationConfig": {
+            "response_mime_type": "application/json",
+            "temperature": 0.2,
+        },
     }
-    async with httpx.AsyncClient(timeout=30.0) as cli:
-        r = await cli.post(url, json=payload)
-        r.raise_for_status()
-        body = r.json()
-    return body["candidates"][0]["content"]["parts"][0]["text"]
+
+    last_exc = None
+    for attempt in range(3):
+        try:
+            with httpx.Client(timeout=45.0) as cli:
+                r = cli.post(url, json=payload)
+                if r.status_code in (429, 503):
+                    time.sleep(2 * (attempt + 1))
+                    continue
+                r.raise_for_status()
+                body = r.json()
+            return body["candidates"][0]["content"]["parts"][0]["text"]
+        except httpx.HTTPStatusError as e:
+            last_exc = e
+            if e.response.status_code not in (429, 503):
+                raise
+            time.sleep(2 * (attempt + 1))
+    raise last_exc or RuntimeError("Gemini image API retry exhausted")
