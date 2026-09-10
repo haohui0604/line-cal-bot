@@ -15,6 +15,7 @@ from app.handlers.flex_builder import (
     summary_flex, weekly_chart_flex, monthly_summary_flex,
 )
 
+
 logger = logging.getLogger(__name__)
 
 DATE_PAT = re.compile(r"(?:(\d{1,2})\s*/\s*(\d{1,2}))?")
