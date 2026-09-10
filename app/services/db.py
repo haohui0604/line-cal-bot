@@ -120,6 +120,7 @@ def fetch_day_summary(user_id: str, date: str) -> Dict[str, Any]:
         "salt_g": r["salt_g"],
     }
 
+
 def fetch_today_food_names(user_id: str, date: str) -> List[str]:
     """当日に記録済みの食品名リスト (LLMコンテキスト用)."""
     with get_conn() as c:
@@ -128,6 +129,7 @@ def fetch_today_food_names(user_id: str, date: str) -> List[str]:
             (user_id, date),
         ).fetchall()
     return [r["food_name"] for r in rows]
+
 
 def fetch_recent_history(user_id: str, days: int = 7) -> List[Dict[str, Any]]:
     with get_conn() as c:
@@ -155,7 +157,10 @@ def fetch_recent_history(user_id: str, days: int = 7) -> List[Dict[str, Any]]:
          "deficit_kcal": r["consumed_kcal"] - r["intake_kcal"]}
         for r in rows
     ]
+
+
 # ---- goals (目標摂取カロリー) ----
+
 def set_goal(*, user_id: str, date: str, target_kcal: float,
              note: Optional[str] = None):
     """その日の目標摂取 kcal を upsert."""
@@ -188,3 +193,52 @@ def fetch_remaining_kcal(user_id: str, date: str) -> Optional[float]:
     s = fetch_day_summary(user_id, date)
     return target - s["intake_kcal"]
 
+
+# ---- 過去データ修正 ----
+
+def update_entry_kcal(*, user_id: str, entry_id: Optional[int] = None,
+                      date: Optional[str] = None,
+                      meal_slot: Optional[str] = None,
+                      food_name: Optional[str] = None,
+                      new_kcal: float) -> bool:
+    """entries の kcal を更新する.
+
+    entry_id が指定されていればそれで一意に更新。
+    そうでなければ (date, meal_slot, food_name) で一致するものを更新。
+    戻り値: 更新できたら True、該当なしなら False。
+    """
+    with get_conn() as c:
+        if entry_id is not None:
+            cur = c.execute(
+                "UPDATE entries SET kcal=?, updated_at=CURRENT_TIMESTAMP"
+                " WHERE id=? AND user_id=?",
+                (new_kcal, entry_id, user_id),
+            )
+        else:
+            cur = c.execute(
+                "UPDATE entries SET kcal=?, updated_at=CURRENT_TIMESTAMP"
+                " WHERE user_id=? AND date=? AND meal_slot=? AND food_name=?",
+                (new_kcal, user_id, date, meal_slot, food_name),
+            )
+        return cur.rowcount > 0
+
+
+def find_entry_candidates(*, user_id: str, date: str,
+                          meal_slot: Optional[str] = None) -> List[Dict[str, Any]]:
+    """指定日のエントリ候補を返す (修正コマンドの曖昧解消用)."""
+    with get_conn() as c:
+        if meal_slot:
+            rows = c.execute(
+                "SELECT id, date, meal_slot, food_name, kcal"
+                " FROM entries WHERE user_id=? AND date=? AND meal_slot=?"
+                " ORDER BY id",
+                (user_id, date, meal_slot),
+            ).fetchall()
+        else:
+            rows = c.execute(
+                "SELECT id, date, meal_slot, food_name, kcal"
+                " FROM entries WHERE user_id=? AND date=?"
+                " ORDER BY meal_slot, id",
+                (user_id, date),
+            ).fetchall()
+    return [dict(r) for r in rows]
