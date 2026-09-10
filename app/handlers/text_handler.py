@@ -24,7 +24,15 @@ def _today() -> str:
 
 
 def _norm_date(m):
-    """DATE_PAT.match().groups() または None を受けて YYYY-MM-DD を返す."""
+    """DATE_PAT.match().groups() または None を受けて YYYY-MM-DD を返す.
+
+    入力例:
+      None           → 今日
+      ()             → 今日 (空マッチ)
+      (None, None)   → 今日
+      ('9', '10')    → 2026-09-10 (年跨ぎ補正あり)
+      ('12', '31')   → 2025-12-31 (今年を過ぎた月は前年扱い)
+    """
     if m is None or len(m) < 2 or m[0] is None or m[1] is None:
         return _today()
     mo, d = int(m[0]), int(m[1])
@@ -42,19 +50,29 @@ def handle_text(user_id: str, text: str):
                 "「集計」「履歴」または\n"
                 "『朝 食パン100g 250kcal P9 F4 C48 食塩1.5g』のように送ってください"
             ))
+
+        # 1) 挨拶
         if text in GREETINGS:
             return TextSendMessage(text=GREETINGS[text])
+
+        # 2) 集計 (Flex Message, alt_text= は SDK 必須)
         if text in ("集計", "今日", "summary", "Summary"):
             s = fetch_day_summary(user_id, _today())
             return FlexSendMessage(
-                altText=f"{_today()} 集計 {s['intake_kcal']:.0f}kcal",
+                alt_text=f"{_today()} 集計 {s['intake_kcal']:.0f}kcal",
                 contents=summary_flex(s),
             )
+
+        # 3) 履歴
         if text in ("履歴", "history", "History", "りれき"):
             rows = fetch_recent_history(user_id, days=7)
             return TextSendMessage(text=_format_history(rows))
+
+        # 4) グラフ
         if text == "グラフ":
             return TextSendMessage(text="グラフ機能は chart_gen.py を参照してください")
+
+        # 5) 食事ログ登録
         m = DATE_PAT.match(text)
         body = text[m.end():].strip() if m else text
         parsed = parse_record_line(body)
@@ -66,6 +84,7 @@ def handle_text(user_id: str, text: str):
                 "  『9/10 昼 ルーローハン81g 食塩2.8g』\n"
                 "コマンド: 『集計』『履歴』『グラフ』"
             ))
+
         kcal = parsed.get("kcal") or 0.0
         if kcal <= 0:
             return TextSendMessage(text=(
@@ -74,6 +93,7 @@ def handle_text(user_id: str, text: str):
                 f"次回送信例:\n"
                 f"  『{parsed['meal_slot']} {parsed['food_name']}100g 250kcal P9 F4 C48 食塩1.5g』"
             ))
+
         d = _norm_date(m.groups() if m else None)
         save_entry(
             user_id=user_id, date=d,
@@ -84,6 +104,7 @@ def handle_text(user_id: str, text: str):
             source_type="user_report", confidence="estimated",
         )
         return TextSendMessage(text=_format_record(d, parsed))
+
     except Exception as exc:
         logger.exception("handle_text error")
         return TextSendMessage(text=f"⚠ エラー: {type(exc).__name__}: {str(exc)[:200]}")
@@ -108,3 +129,4 @@ def _format_history(rows):
             f"赤字 {r['deficit_kcal']:.0f}kcal"
         )
     return "\n".join(lines)
+
