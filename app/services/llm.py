@@ -117,3 +117,72 @@ def parse_llm_json(raw: str) -> dict:
     data.setdefault("foods", [])
     data.setdefault("answer", "")
     return data
+
+def estimate_foods_batch(items: list) -> list:
+    """一括登録モード用: kcal未記載の行をまとめて栄養推定する.
+
+    items: [{"date": "2026-09-01", "meal_slot": "breakfast",
+             "food_name": "食パン", "quantity_g": 100.0 or None}, ...]
+    戻り値: items と同じ並びの list。各要素に kcal/protein_g/fat_g/
+            carb_g/salt_g が補完される。失敗時は例外。
+    """
+    api_key = settings.GEMINI_API_KEY
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY not set")
+
+    lines = ["以下の食事記録の各行について、日本の一般的な食品成分値で"
+             "栄養を推定してください。\n"]
+    for i, it in enumerate(items):
+        q = f"{it['quantity_g']:.0f}g" if it.get("quantity_g") else "1人前"
+        lines.append(f"{i}. {it['food_name']} ({q})")
+    lines.append(
+        "\n必ず次のJSONだけを返してください。説明文・コードフェンスは不要。\n"
+        '{"foods": [{"index": 0, "kcal": 数値, "protein_g": 数値, '
+        '"fat_g": 数値, "carb_g": 数値, "salt_g": 数値}, ...]}\n'
+        "ルール:\n"
+        "- index は入力行番号と一致させる\n"
+        "- 推定が困難でも妥当な中央値で必ず数値を入れる\n"
+        "- 分量が指定されている場合はその分量で計算する"
+    )
+
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{MODEL}:generateContent?key={api_key}"
+    )
+    payload = {
+        "contents": [{"parts": [{"text": "\n".join(lines)}]}],
+        "generationConfig": {
+            "response_mime_type": "application/json",
+            "temperature": 0.2,
+        },
+    }
+    last_exc = None
+    import time as _time
+    for attempt in range(3):
+        try:
+            with httpx.Client(timeout=60.0) as cli:
+                r = cli.post(url, json=payload)
+                if r.status_code in (429, 503):
+                    _time.sleep(2 * (attempt + 1))
+                    continue
+                r.raise_for_status()
+                body = r.json()
+            raw = body["candidates"][0]["content"]["parts"][0]["text"]
+            data = parse_llm_json(raw)
+            for f in data.get("foods", []):
+                idx = f.get("index")
+                if isinstance(idx, int) and 0 <= idx < len(items):
+                    for key in ("kcal", "protein_g", "fat_g",
+                                "carb_g", "salt_g"):
+                        if f.get(key) is not None:
+                            items[idx][key] = float(f[key])
+            return items
+        except httpx.HTTPStatusError as e:
+            last_exc = e
+            if e.response.status_code not in (429, 503):
+                raise
+            _time.sleep(2 * (attempt + 1))
+        except (httpx.ReadTimeout, httpx.ConnectTimeout) as e:
+            last_exc = e
+            _time.sleep(2 * (attempt + 1))
+    raise last_exc or RuntimeError("batch estimate retry exhausted")
