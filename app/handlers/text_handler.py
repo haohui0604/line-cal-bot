@@ -235,7 +235,6 @@ def handle_text(user_id: str, text: str):
             ))
 
         if user_id in _bulk_pending:
-        if user_id in _bulk_pending:
             if text in ("キャンセル", "やめる"):
                 _bulk_pending.pop(user_id)
                 return TextSendMessage(text="一括登録をキャンセルしました")
@@ -245,7 +244,7 @@ def handle_text(user_id: str, text: str):
                     return TextSendMessage(text="登録対象がありませんでした")
 
                 # --------------------------------------------------
-                # kcal 無し行の推定: まず batch → 失敗時に per-item
+                # 【E】kcal 無し行の推定: まず batch → 失敗時に per-item
                 # --------------------------------------------------
                 need_estimate = [r for r in rows
                                  if (r.get("kcal") or 0.0) <= 0]
@@ -259,6 +258,7 @@ def handle_text(user_id: str, text: str):
                     except Exception:
                         logger.exception("batch estimate failed, "
                                          "falling back to per-item")
+                        # per-item で1件ずつ再推定 (失敗したものだけスキップ)
                         from app.services.llm import estimate_food_single
                         survived = []
                         for it in need_estimate:
@@ -271,7 +271,7 @@ def handle_text(user_id: str, text: str):
                         need_estimate = survived
 
                 # --------------------------------------------------
-                # 保存: 推定成功したものだけ、kcal あるものだけ
+                # 保存: kcal のある行だけ保存
                 # --------------------------------------------------
                 savable = already_known + [r for r in need_estimate
                                            if (r.get("kcal") or 0.0) > 0]
@@ -326,8 +326,7 @@ def handle_text(user_id: str, text: str):
                         msg += f"  …他 {len(failed) - 5}件"
                 return TextSendMessage(text=msg)
 
-            # モード中の入力 = 過去ログ行としてパース  ← この行以降は既存のまま
-
+            # モード中の入力 = 過去ログ行としてパース
             added, skipped = [], []
             for line in text.splitlines():
                 line = line.strip()
