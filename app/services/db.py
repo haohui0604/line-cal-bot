@@ -22,11 +22,21 @@ def get_conn():
 
 
 def init_db():
-    schema = Path(__file__).resolve().parents[2] / "migrations" / "001_init.sql"
-    sql = schema.read_text(encoding="utf-8")
+    """migrations/*.sql をファイル名順(001→002→…)に冪等適用する.
+
+    全SQLは CREATE TABLE IF NOT EXISTS なので、起動のたびに流しても安全。
+    新しいテーブルは migrations/ に .sql を追加するだけで適用される。
+    """
+    import glob
+    mig_dir = Path(__file__).resolve().parents[2] / "migrations"
+    files = sorted(glob.glob(str(mig_dir / "*.sql")))
+    if not files:
+        logger.warning("no migration files found under %s", mig_dir)
+        return
     with get_conn() as c:
-        c.executescript(sql)
-    logger.info("DB schema initialized")
+        for f in files:
+            c.executescript(Path(f).read_text(encoding="utf-8"))
+    logger.info("migrations applied: %s", [Path(f).name for f in files])
 
 
 def save_entry(*, user_id: str, date: str, meal_slot: str, food_name: str,
@@ -137,4 +147,36 @@ def fetch_recent_history(user_id: str, days: int = 7) -> List[Dict[str, Any]]:
          "deficit_kcal": r["consumed_kcal"] - r["intake_kcal"]}
         for r in rows
     ]
+# ---- goals (目標摂取カロリー) ----
+def set_goal(*, user_id: str, date: str, target_kcal: float,
+             note: Optional[str] = None):
+    """その日の目標摂取 kcal を upsert."""
+    with get_conn() as c:
+        c.execute("""
+            INSERT INTO goals (user_id, date, target_kcal, note)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id, date) DO UPDATE SET
+              target_kcal=excluded.target_kcal,
+              note=excluded.note
+        """, (user_id, date, target_kcal, note))
+
+
+def get_goal(user_id: str, date: str) -> Optional[float]:
+    """指定日以前で最新の目標 kcal。未設定なら None。"""
+    with get_conn() as c:
+        r = c.execute(
+            "SELECT target_kcal FROM goals"
+            " WHERE user_id=? AND date<=? ORDER BY date DESC LIMIT 1",
+            (user_id, date),
+        ).fetchone()
+    return r["target_kcal"] if r else None
+
+
+def fetch_remaining_kcal(user_id: str, date: str) -> Optional[float]:
+    """目標 - 摂取済み。目標未設定なら None。"""
+    target = get_goal(user_id, date)
+    if target is None:
+        return None
+    s = fetch_day_summary(user_id, date)
+    return target - s["intake_kcal"]
 
