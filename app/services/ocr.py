@@ -15,7 +15,7 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-MODEL = "gemini-flash-latest"
+MODEL = "gemini-flash-lite-latest"
 
 OCR_PROMPT = """\
 あなたは食事画像の解析アシスタントです。送信された画像は
@@ -66,13 +66,13 @@ def extract_label(image_bytes: bytes, mime_type: str = "image/jpeg") -> str:
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY not set in environment")
 
-    # 画像を長辺1280pxに縮小 (無料枠Flashの応答速度改善)
+    # 画像を長辺1024pxに縮小 (無料枠Flash-Liteの応答速度改善)
     try:
         from io import BytesIO
         from PIL import Image
         img = Image.open(BytesIO(image_bytes))
-        if max(img.size) > 1280:
-            ratio = 1280 / max(img.size)
+        if max(img.size) > 1024:
+            ratio = 1024 / max(img.size)
             img = img.resize((int(img.width * ratio), int(img.height * ratio)))
             buf = BytesIO()
             img.convert("RGB").save(buf, format="JPEG", quality=85)
@@ -104,7 +104,7 @@ def extract_label(image_bytes: bytes, mime_type: str = "image/jpeg") -> str:
     last_exc = None
     for attempt in range(3):
         try:
-            with httpx.Client(timeout=75.0) as cli:
+            with httpx.Client(timeout=120.0) as cli:
                 r = cli.post(url, json=payload)
                 if r.status_code in (429, 503):
                     time.sleep(2 * (attempt + 1))
