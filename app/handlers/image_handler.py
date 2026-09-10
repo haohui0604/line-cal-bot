@@ -1,9 +1,9 @@
-"""画像 → Gemini 解析 (成分表OCR / 食べ物写真推定) → DB保存.
+"""画像 → Gemini 解析 (成分表/料理写真/体重計) → DB保存.
 
-動作:
-- mode=label (成分表): confidence=confirmed → 即時DB保存
-- mode=photo (料理写真): confidence=estimated → 推定値を提示し、
-  「はい」でDB保存 (text_handler の _pending と同一の仕組みを利用)
+mode ごとの分岐:
+- mode=label  (成分表): confidence=confirmed → 即時DB保存 (entries)
+- mode=photo  (料理写真): confidence=estimated → 確認フロー (_pending 経由)
+- mode=weight (体重計): confidence=confirmed → 即時DB保存 (weight_logs)
 """
 import json
 import logging
@@ -13,27 +13,17 @@ from datetime import date
 from linebot.models import TextSendMessage
 
 from app.services.ocr import extract_label
-from app.services.db import save_entry
+from app.services.db import save_entry, save_weight
 
 logger = logging.getLogger(__name__)
 
 
 def handle_image(user_id: str, message_id: str, line_bot_api):
-    import time as _time
-    content = None
-    for _attempt in range(3):
-        try:
-            content = line_bot_api.get_message_content(message_id)
-            image_bytes = b"".join(content.iter_content())
-            break
-        except Exception:
-            if _attempt == 2:
-                raise
-            _time.sleep(2)
     try:
+        content = line_bot_api.get_message_content(message_id)
+        image_bytes = b"".join(content.iter_content())
         mime = getattr(content, "content_type", None) or "image/jpeg"
-        label = extract_label(image_bytes, mime_type=mime)
-
+        raw = extract_label(image_bytes, mime_type=mime)
     except Exception as e:
         logger.exception("image analysis failed")
         return TextSendMessage(text=(
@@ -43,7 +33,7 @@ def handle_image(user_id: str, message_id: str, line_bot_api):
         ))
 
     try:
-        text = label if isinstance(label, str) else json.dumps(label, ensure_ascii=False)
+        text = raw if isinstance(raw, str) else json.dumps(raw, ensure_ascii=False)
         text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(),
                       flags=re.MULTILINE)
         m = re.search(r"\{.*\}", text, flags=re.DOTALL)
@@ -53,15 +43,30 @@ def handle_image(user_id: str, message_id: str, line_bot_api):
 
     mode = data.get("mode") or "photo"
 
-    # 食事に無関係と判断された画像
+    if mode == "weight":
+        weight_kg = data.get("weight_kg")
+        if not weight_kg:
+            return TextSendMessage(text=(
+                "体重計の数値を読み取れませんでした。\n"
+                "撮影した画面にKgの数字がはっきり映っている画像を送ってください"
+            ))
+        save_weight(
+            user_id=user_id, date=date.today().isoformat(),
+            weight_kg=float(weight_kg), is_measured=1,
+            body_fat_pct=data.get("body_fat_pct"),
+            muscle_kg=data.get("muscle_kg"),
+            bmr_kcal=data.get("bmr_kcal"),
+            note="ocr_image",
+        )
+        return TextSendMessage(text=_make_weight_reply(data))
+
     if (data.get("kcal") in (0, None)) and data.get("name") in ("不明", None):
         return TextSendMessage(text=(
-            "食事の画像として認識できませんでした。\n"
-            "料理の写真、または栄養成分表の写真を送ってください"
+            "食事/体重計の画像として認識できませんでした。\n"
+            "料理の画像、栄養成分表、または体重計の写真を送ってください"
         ))
 
     if mode == "label":
-        # 成分表: 数値は表記からの厳密な読み取り → 即時保存
         save_entry(
             user_id=user_id,
             date=date.today().isoformat(),
@@ -80,7 +85,7 @@ def handle_image(user_id: str, message_id: str, line_bot_api):
         )
         return TextSendMessage(text=_make_label_reply(data))
 
-    # mode == photo: 推定値 → 確認フロー (text_handler と同じ _pending を共有)
+    # mode=photo → 推定 → 確認フロー
     from app.handlers.text_handler import _pending
     foods = [{
         "name": data.get("name") or "不明",
@@ -116,3 +121,20 @@ def _make_label_reply(d):
         f"C{d.get('carb_g', '?')} 食塩{d.get('salt_g', '?')}g\n"
         f"   source=ocr_label / confidence=confirmed"
     )
+
+
+def _make_weight_reply(d):
+    reaction = (d.get("reaction") or "").strip()
+    head = f"⚖️ 体重計から記録: {float(d['weight_kg']):.1f}kg"
+    extras = []
+    if d.get("body_fat_pct"):
+        extras.append(f"体脂肪 {d['body_fat_pct']}%")
+    if d.get("muscle_kg"):
+        extras.append(f"筋肉 {d['muscle_kg']}kg")
+    if d.get("bmr_kcal"):
+        extras.append(f"BMR {d['bmr_kcal']}kcal")
+    extra_line = (" (" + " / ".join(extras) + ")") if extras else ""
+    tail = "\n   source=ocr_image / confidence=confirmed"
+    if reaction:
+        return f"{reaction}\n{head}{extra_line}{tail}"
+    return f"{head}{extra_line}{tail}"
