@@ -68,6 +68,31 @@ GREETINGS = {
     "こんばんは":       "こんばんは！夕食・まとめの記録どうぞ 🌙",
 }
 
+HELP_TEXT = (
+    "📖 使い方ガイド\n"
+    "\n"
+    "【記録】\n"
+    "・『朝 食パン100g 250kcal』→ 即記録\n"
+    "・『ラーメン食べた』→ AI推定(確認あり)\n"
+    "・写真送信 → 料理/成分表/体重計/消費kcalを読取\n"
+    "・『間食 プロテインバー 180kcal』→ 間食区分\n"
+    "\n"
+    "【過去データ】\n"
+    "・『一括』→ 複数行貼付け →『確定』\n"
+    "・『修正 9/9 昼 牛丼 720kcal』→ 過去記録の修正\n"
+    "\n"
+    "【体組成・運動】\n"
+    "・『体重 72.5 体脂肪18 筋肉52 BMR1500』\n"
+    "・『運動 320』→ 消費kcal記録\n"
+    "\n"
+    "【確認】\n"
+    "・『集計』『履歴』『週次』『月次』\n"
+    "・『目標 2000』→ 目標設定 /『目標』→ 確認\n"
+    "\n"
+    "【相談】\n"
+    "・『あと何kcal食べていい？』など自由文でAI相談"
+)
+
 # LLM 推定の未確定レコード (Render 再起動で消える簡易実装)
 _pending: dict = {}           # user_id -> {"foods": [...], "meal_slot": str, "date": str}
 _modify_pending: dict = {}    # user_id -> {"candidates": [...], "new_kcal": float}
@@ -142,7 +167,8 @@ def handle_text(user_id: str, text: str):
             return TextSendMessage(text=(
                 "「集計」「履歴」「週次」「月次」「目標」のいずれかを入力するか、\n"
                 "『朝 食パン100g 250kcal』形式で送ってください。\n"
-                "自由文 (例:『さっきラーメン食べた』) もOKです"
+                "自由文 (例:『さっきラーメン食べた』) もOKです\n"
+                "『使い方』で全機能を確認できます"
             ))
 
         # 0) LLM 推定の確定/取消 (pending は日付も保持)
@@ -190,6 +216,13 @@ def handle_text(user_id: str, text: str):
 
         # 0.6) 一括登録モード
         if text in ("一括", "一括登録", "import", "Import"):
+            # 【A】モード中の再入ガード: 読込済みデータを消さない
+            if user_id in _bulk_pending and _bulk_pending[user_id]["rows"]:
+                n = len(_bulk_pending[user_id]["rows"])
+                return TextSendMessage(text=(
+                    f"📥 一括登録モード中です（読込済み {n}件）\n"
+                    "続きの行を貼り付けるか、『確定』『キャンセル』で終了してください"
+                ))
             _bulk_pending[user_id] = {"rows": []}
             return TextSendMessage(text=(
                 "📥 一括登録モードです。1行1件で貼り付けてください\n"
@@ -280,6 +313,10 @@ def handle_text(user_id: str, text: str):
         # 1) 挨拶
         if text in GREETINGS:
             return TextSendMessage(text=GREETINGS[text])
+
+        # 1.5) 使い方ガイド 【B】AIを通さず定型応答
+        if text in ("使い方", "使い方案内", "ヘルプ", "help", "Help", "HELP"):
+            return TextSendMessage(text=HELP_TEXT)
 
         # 2) 集計
         if text in ("集計", "今日", "summary", "Summary"):
@@ -382,6 +419,7 @@ def handle_text(user_id: str, text: str):
             ))
 
         # 8) 過去データ修正
+        #    【C】旧kcal表示 / 【D】3段フォールバック検索
         m = MODIFY_PAT.match(text)
         if m:
             mo, d = int(m.group(1)), int(m.group(2))
@@ -393,26 +431,23 @@ def handle_text(user_id: str, text: str):
             target_date = f"{y}-{mo:02d}-{d:02d}"
             slot_en = _slot_to_english(slot_jp) if slot_jp else None
 
-            if slot_en:
-                updated = update_entry_kcal(
-                    user_id=user_id, date=target_date,
-                    meal_slot=slot_en, food_name=food_name,
-                    new_kcal=new_kcal,
-                )
-                if updated:
-                    return TextSendMessage(text=(
-                        f"✅ 修正しました: {target_date} {slot_jp} {food_name}\n"
-                        f"kcal: → {new_kcal:.0f}"
-                    ))
-                # 完全一致で取れなかった → 部分一致候補検索へ
-                candidates = find_entry_candidates(
-                    user_id=user_id, date=target_date,
-                    meal_slot=slot_en, food_name_like=food_name,
-                )
-            else:
+            # 1段目: スロット + 食品名 (部分一致)
+            candidates = find_entry_candidates(
+                user_id=user_id, date=target_date,
+                meal_slot=slot_en, food_name_like=food_name,
+            ) if slot_en else []
+
+            # 2段目: スロット条件を外して食品名のみ
+            if not candidates:
                 candidates = find_entry_candidates(
                     user_id=user_id, date=target_date,
                     food_name_like=food_name,
+                )
+
+            # 3段目: その日の全記録 (ユーザーに番号選択させる)
+            if not candidates:
+                candidates = find_entry_candidates(
+                    user_id=user_id, date=target_date,
                 )
 
             if not candidates:
@@ -500,9 +535,11 @@ def _handle_llm(user_id: str, text: str):
         result = chat(text, _build_context(user_id))
     except Exception as exc:
         logger.exception("LLM call failed")
+        # 【B】AI失敗時: 使い方への導線を付けたフォールバック
         return TextSendMessage(text=(
             "AI応答に失敗しました。少し待って再送するか、\n"
-            "『朝 食パン100g 250kcal』形式で直接記録してください"
+            "『朝 食パン100g 250kcal』形式で直接記録してください。\n"
+            "『使い方』で全コマンドを確認できます"
         ))
 
     intent = result.get("intent", "chat")
