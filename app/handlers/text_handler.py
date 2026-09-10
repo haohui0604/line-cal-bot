@@ -26,7 +26,6 @@ GREETINGS = {
 
 _pending: dict = {}
 
-
 def _today() -> str:
     return date.today().isoformat()
 
