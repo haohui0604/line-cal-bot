@@ -17,7 +17,7 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-MODEL = "gemini-2.0-flash"
+MODEL = "gemini-2.5-flash"
 
 SYSTEM_PROMPT = """\
 あなたはLINEのカロリー管理パートナー「おがさのカロリー収支管理」です。
