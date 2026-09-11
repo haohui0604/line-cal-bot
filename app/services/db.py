@@ -9,16 +9,28 @@ logger = logging.getLogger(__name__)
 
 
 @contextmanager
+from contextlib import contextmanager
+
+@contextmanager
 def get_conn():
-    p = Path(__import__("app.config", fromlist=["settings"]).settings.DB_PATH)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(p))
-    conn.row_factory = sqlite3.Row
+    if settings.TURSO_DATABASE_URL:
+        import libsql
+        conn = libsql.connect(
+            "replica.db",
+            sync_url=settings.TURSO_DATABASE_URL,
+            auth_token=settings.TURSO_AUTH_TOKEN,
+        )
+    else:
+        conn = sqlite3.connect(settings.DB_PATH)
+        conn.row_factory = sqlite3.Row
     try:
         yield conn
         conn.commit()
+        if settings.TURSO_DATABASE_URL:
+            conn.sync()   # 書き込みをTursoへ送信
     finally:
         conn.close()
+
 
 
 def init_db():
