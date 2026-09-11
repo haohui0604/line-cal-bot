@@ -205,14 +205,22 @@ def fetch_recent_history(user_id: str, days: int = 7) -> List[Dict[str, Any]]:
             """,
             (user_id, user_id, user_id, user_id, days),
         ).fetchall()
+
+    def _get(r, key, idx):
+        # libsql=辞書風 / sqlite3.Row=両対応 / 素のtuple=位置アクセス
+        try:
+            return r[key]
+        except (TypeError, KeyError, IndexError):
+            return r[idx]
+
     return [
-        {"date": r[0] if not isinstance(r, sqlite3.Row) else r["date"],
-         "intake_kcal": r[1] if not isinstance(r, sqlite3.Row) else r["intake_kcal"],
-         "consumed_kcal": r[2] if not isinstance(r, sqlite3.Row) else r["consumed_kcal"],
-         "deficit_kcal": (r[2] if not isinstance(r, sqlite3.Row) else r["consumed_kcal"])
-                        - (r[1] if not isinstance(r, sqlite3.Row) else r["intake_kcal"])}
+        {"date": _get(r, "date", 0),
+         "intake_kcal": _get(r, "intake_kcal", 1),
+         "consumed_kcal": _get(r, "consumed_kcal", 2),
+         "deficit_kcal": _get(r, "consumed_kcal", 2) - _get(r, "intake_kcal", 1)}
         for r in rows
     ]
+
 
 
 
