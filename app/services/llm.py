@@ -59,7 +59,6 @@ SYSTEM_PROMPT = """\
 - 数値は推定であることを前提に、断定的すぎない表現にする。
 """
 
-
 def _build_user_message(user_message: str, context: dict) -> str:
     lines = [
         "【ユーザーの発言】",
@@ -78,7 +77,25 @@ def _build_user_message(user_message: str, context: dict) -> str:
     today_foods = context.get("today_foods") or []
     if today_foods:
         lines.append("今日の記録済み: " + " / ".join(today_foods[:10]))
+
+    # 過去日参照があればその日の実データを注入（幻覚防止）
+    ref = context.get("ref_date")
+    if ref:
+        ref_foods = context.get("ref_date_foods") or []
+        lines += ["", f"【{ref} の記録データ（実データ。創作禁止）】"]
+        if ref_foods:
+            for f in ref_foods:
+                lines.append(f"・{f}")
+            lines.append(
+                f"合計: 摂取 {context.get('ref_date_intake', 0):.0f}kcal / "
+                f"消費 {context.get('ref_date_burn', 0):.0f}kcal")
+        else:
+            lines.append("（この日の食事記録はありません）")
+        lines.append(
+            "ユーザーがこの日について質問した場合は、上記データだけを根拠に答えること。"
+            "記録がなければ『その日は記録なし』と正直に伝える。")
     return "\n".join(lines)
+
 
 
 def _post_with_fallback(payload: dict, timeout: float = 30.0) -> dict:
