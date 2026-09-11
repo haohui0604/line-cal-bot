@@ -10,8 +10,8 @@ class Settings(BaseSettings):
     DB_PATH: str = "./data/cal.db"
     HOST: str = "0.0.0.0"
     PORT: int = 8000
-TURSO_DATABASE_URL: str = os.getenv("TURSO_DATABASE_URL", "")
-TURSO_AUTH_TOKEN: str = os.getenv("TURSO_AUTH_TOKEN", "")
+    TURSO_DATABASE_URL: str = os.getenv("TURSO_DATABASE_URL", "")
+    TURSO_AUTH_TOKEN: str = os.getenv("TURSO_AUTH_TOKEN", "")
 
     class Config:
         env_file = ".env"
@@ -19,3 +19,4 @@ TURSO_AUTH_TOKEN: str = os.getenv("TURSO_AUTH_TOKEN", "")
 settings = Settings()
 
 Path(settings.DB_PATH).parent.mkdir(parents=True, exist_ok=True)
+
