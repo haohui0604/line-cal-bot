@@ -19,6 +19,9 @@ def get_conn():
             sync_url=settings.TURSO_DATABASE_URL,
             auth_token=settings.TURSO_AUTH_TOKEN,
         )
+        # 【重要】SQLiteと同じく行を名前でアクセス可能にする。
+        # これが無いと libsql はタプルを返し、r["kcal"] 等が TypeError になる。
+        conn.row_factory = sqlite3.Row
     else:
         conn = sqlite3.connect(settings.DB_PATH)
         conn.row_factory = sqlite3.Row
@@ -29,6 +32,8 @@ def get_conn():
             conn.sync()   # 書き込みをTursoへ送信
     finally:
         conn.close()
+
+
 
 
 
