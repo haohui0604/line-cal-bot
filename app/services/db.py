@@ -241,3 +241,38 @@ def find_entry_candidates(*, user_id: str, date: str,
     with get_conn() as c:
         rows = c.execute(sql, params).fetchall()
     return [dict(r) for r in rows]
+
+def fetch_latest_weight(user_id: str, on_or_before: str = None):
+    """指定日以前の最新体重を返す（未入力日の繰越し補完用）."""
+    sql = ("SELECT date, weight_kg, is_measured FROM weight_logs"
+           " WHERE user_id=?")
+    params = [user_id]
+    if on_or_before:
+        sql += " AND date<=?"
+        params.append(on_or_before)
+    sql += " ORDER BY date DESC LIMIT 1"
+    with get_conn() as c:
+        r = c.execute(sql, params).fetchone()
+    return dict(r) if r else None
+
+
+def fetch_weight_series(user_id: str, days: int = 7):
+    """直近days日分の体重系列。未入力日は直前の記録値で繰越し（is_measured=0=推定）."""
+    from datetime import date as _date, timedelta
+    with get_conn() as c:
+        rows = c.execute(
+            "SELECT date, weight_kg, is_measured FROM weight_logs"
+            " WHERE user_id=? ORDER BY date", (user_id,)).fetchall()
+    by_date = {r["date"]: dict(r) for r in rows}
+    end = _date.today()
+    result, last = [], None
+    for i in range(days - 1, -1, -1):
+        d = (end - timedelta(days=i)).isoformat()
+        if d in by_date:
+            last = by_date[d]
+            result.append({"date": d, "weight_kg": last["weight_kg"],
+                           "is_measured": last["is_measured"]})
+        elif last is not None:
+            result.append({"date": d, "weight_kg": last["weight_kg"],
+                           "is_measured": 0})
+    return result
