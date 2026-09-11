@@ -192,26 +192,28 @@ def fetch_recent_history(user_id: str, days: int = 7) -> List[Dict[str, Any]]:
             """
             SELECT d.date,
                    COALESCE((SELECT SUM(kcal) FROM entries
-                              WHERE user_id=:uid AND date=d.date), 0) AS intake_kcal,
+                              WHERE user_id=? AND date=d.date), 0) AS intake_kcal,
                    COALESCE((SELECT total_kcal FROM activity
-                              WHERE user_id=:uid AND date=d.date), 0) AS consumed_kcal
+                              WHERE user_id=? AND date=d.date), 0) AS consumed_kcal
             FROM (
-                SELECT date FROM entries  WHERE user_id=:uid
+                SELECT date FROM entries  WHERE user_id=?
                 UNION
-                SELECT date FROM activity WHERE user_id=:uid
+                SELECT date FROM activity WHERE user_id=?
             ) d
             ORDER BY d.date DESC
-            LIMIT :days
+            LIMIT ?
             """,
-            {"uid": user_id, "days": days},
+            (user_id, user_id, user_id, user_id, days),
         ).fetchall()
     return [
-        {"date": r["date"],
-         "intake_kcal": r["intake_kcal"],
-         "consumed_kcal": r["consumed_kcal"],
-         "deficit_kcal": r["consumed_kcal"] - r["intake_kcal"]}
+        {"date": r[0] if not isinstance(r, sqlite3.Row) else r["date"],
+         "intake_kcal": r[1] if not isinstance(r, sqlite3.Row) else r["intake_kcal"],
+         "consumed_kcal": r[2] if not isinstance(r, sqlite3.Row) else r["consumed_kcal"],
+         "deficit_kcal": (r[2] if not isinstance(r, sqlite3.Row) else r["consumed_kcal"])
+                        - (r[1] if not isinstance(r, sqlite3.Row) else r["intake_kcal"])}
         for r in rows
     ]
+
 
 
 # ---- goals (目標摂取カロリー) ----
