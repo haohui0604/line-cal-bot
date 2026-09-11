@@ -32,10 +32,11 @@ WEIGHT_PAT = re.compile(
     r"(?:\s+(?:BMR|基礎代謝)\s*([0-9]+))?"
 )
 ACTIVITY_PAT = re.compile(
-    r"^(?:運動|活動|消費)\s+([0-9]+)(?:\s*kcal)?"
-    r"(?:\s+(?:活動|active|ACTIVE)\s+([0-9]+))?"
-    r"(?:\s+(?:安静|resting|RESTING|基礎代謝|basal)\s+([0-9]+))?"
+    r"^(?:(\d{1,2})/(\d{1,2})\s+)?(?:運動|活動|消費)\s+([0-9]+)(?:\s*kcal)?"
+    r"(?:\s+(?:活動|active|ACTIVE)\s*([0-9]+))?"
+    r"(?:\s+(?:安静|resting|RESTING|基礎代謝|basal)\s*([0-9]+))?"
 )
+
 # 修正: 「修正 9/9 昼 牛丼並盛 720」 / 「修正 9/9 牛丼 720」
 MODIFY_PAT = re.compile(
     r"^修正\s+(\d{1,2})/(\d{1,2})"
@@ -437,29 +438,30 @@ def handle_text(user_id: str, text: str):
                 base += " (" + " / ".join(extra) + ")"
             return TextSendMessage(text=base + "\n『履歴』で推移を確認できます")
 
-        # 7) 活動(消費)カロリー
+        # 7) 活動(消費)カロリー（日付指定可: 「9/10 消費 2188 活動195 安静1993」）
         m = ACTIVITY_PAT.match(text)
         if m:
-            total = float(m.group(1))
-            active = float(m.group(2)) if m.group(2) else None
-            resting = float(m.group(3)) if m.group(3) else None
+            rec_date = _norm_date((m.group(1), m.group(2))) if m.group(1) else _today()
+            total = float(m.group(3))
+            active = float(m.group(4)) if m.group(4) else None
+            resting = float(m.group(5)) if m.group(5) else None
             save_activity(
-                user_id=user_id, date=_today(),
+                user_id=user_id, date=rec_date,
                 total_kcal=total, active_kcal=active,
                 resting_kcal=resting, source_type="user_report",
                 ocr_image_url=None,
             )
-            s = fetch_day_summary(user_id, _today())
-            tgt = _resolve_target_kcal(user_id, _today())
+            s = fetch_day_summary(user_id, rec_date)
+            tgt = _resolve_target_kcal(user_id, rec_date)
             extra = ""
             if active or resting:
                 extra = f" (活動 {active or 0:.0f} / 安静 {resting or 0:.0f})"
             return TextSendMessage(text=(
-                f"🏃 活動記録: {total:.0f}kcal{extra}\n"
-                f"今日の消費 {s['burn_kcal']:.0f}kcal / 摂取 {s['intake_kcal']:.0f}kcal\n"
-                f"目標 {tgt:.0f}kcal まで残り {max(tgt - s['intake_kcal'], 0):.0f}kcal\n"
+                f"🏃 活動記録: {rec_date} {total:.0f}kcal{extra}\n"
+                f"消費 {s['burn_kcal']:.0f}kcal / 摂取 {s['intake_kcal']:.0f}kcal\n"
                 f"赤字 {s['deficit_kcal']:+.0f}kcal"
             ))
+
 
         # 8) 過去データ修正
         #    【C】旧kcal表示 / 【D】3段フォールバック検索
