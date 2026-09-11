@@ -5,11 +5,10 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 import logging
 
+from app.config import settings
+
 logger = logging.getLogger(__name__)
 
-
-@contextmanager
-from contextlib import contextmanager
 
 @contextmanager
 def get_conn():
