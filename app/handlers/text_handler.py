@@ -1,6 +1,7 @@
 """テキスト入力 → commands / records / summary / LLM chat 振り分け."""
 import logging
 import re
+
 from datetime import date
 
 from linebot.models import TextSendMessage, FlexSendMessage
@@ -9,7 +10,8 @@ from app.services.db import (
     save_entry, save_activity, save_weight, set_goal, get_goal,
     fetch_day_summary, fetch_recent_history, fetch_today_food_names,
     update_entry_kcal, find_entry_candidates,
-    fetch_latest_weight, fetch_weight_series,
+    fetch_latest_weight, fetch_weight_series, fetch_entries_for_date,
+
 )
 from app.services.calorie_calc import parse_record_line
 from app.handlers.flex_builder import (
