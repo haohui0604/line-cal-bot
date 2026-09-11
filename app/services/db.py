@@ -286,3 +286,14 @@ def fetch_weight_series(user_id: str, days: int = 7):
             result.append({"date": d, "weight_kg": last["weight_kg"],
                            "is_measured": 0})
     return result
+    def fetch_entries_for_date(user_id: str, date: str) -> List[Dict[str, Any]]:
+    """指定日の食事明細を返す（AIコンテキスト注入用）."""
+    with get_conn() as c:
+        rows = c.execute(
+            "SELECT meal_slot, food_name, kcal, protein_g, fat_g, carb_g, salt_g"
+            " FROM entries WHERE user_id=? AND date=?"
+            " ORDER BY CASE meal_slot"
+            "  WHEN 'breakfast' THEN 1 WHEN 'lunch' THEN 2"
+            "  WHEN 'dinner' THEN 3 ELSE 4 END, id",
+            (user_id, date)).fetchall()
+    return [dict(r) for r in rows]
