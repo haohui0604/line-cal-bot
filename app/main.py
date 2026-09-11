@@ -1,7 +1,8 @@
+# app/main.py
 from fastapi import FastAPI, Request, Header, HTTPException
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent
+from linebot.models import MessageEvent, TextMessage, ImageMessage   # ← 追加
 from app.config import settings
 from app.services.db import init_db
 from app.webhook import on_message
@@ -40,6 +41,12 @@ async def callback(
     return {"ok": True}
 
 
-@handler.add(MessageEvent)
-def _on(event):
+# ★ 変更点：TextMessage と ImageMessage をそれぞれ登録 ★
+@handler.add(MessageEvent, message=TextMessage)
+def _on_text(event):
+    on_message(event, line_bot_api)
+
+
+@handler.add(MessageEvent, message=ImageMessage)
+def _on_image(event):
     on_message(event, line_bot_api)
