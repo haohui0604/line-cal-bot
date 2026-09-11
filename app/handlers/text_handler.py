@@ -732,11 +732,42 @@ def handle_text(user_id: str, text: str):
         logger.exception("handle_text error")
         return TextSendMessage(text=f"⚠ エラー: {type(exc).__name__}: {str(exc)[:200]}")
 
+def _detect_ref_date(text: str) -> str:
+    """発言中の日付参照を検出。なければ None（=今日）.
+    対応: 「9/10」「9月10日」「昨日」「おととい」
+    言い回しではなく日付表現だけを見るので、どんな文体でも拾える。
+    """
+    from datetime import timedelta
+    m = re.search(r"(\d{1,2})[/月](\d{1,2})日?", text)
+    if m:
+        return _norm_date((m.group(1), m.group(2)))
+    if "おととい" in text or "一昨日" in text:
+        return (date.today() - timedelta(days=2)).isoformat()
+    if "昨日" in text or "きのう" in text:
+        return (date.today() - timedelta(days=1)).isoformat()
+    return None
+
 
 def _handle_llm(user_id: str, text: str):
     from app.services.llm import chat
+
+    # 発言に日付参照があれば、その日のデータをコンテキストに注入する。
+    # 質問の言い回しは問わない（「9/10何食べた？」「10日の夕飯なんだっけ」両方OK）
+    ref_date = _detect_ref_date(text)
+    context = _build_context(user_id)
+    if ref_date and ref_date != _today():
+        day_rows = fetch_entries_for_date(user_id, ref_date)
+        day_sum = fetch_day_summary(user_id, ref_date)
+        context["ref_date"] = ref_date
+        context["ref_date_foods"] = [
+            f"{r['meal_slot']}: {r['food_name']} {r['kcal']:.0f}kcal"
+            for r in day_rows
+        ]
+        context["ref_date_intake"] = day_sum["intake_kcal"]
+        context["ref_date_burn"] = day_sum["burn_kcal"]
+
     try:
-        result = chat(text, _build_context(user_id))
+        result = chat(text, context)
     except Exception:
         logger.exception("LLM call failed")
         return TextSendMessage(text=(
@@ -749,12 +780,9 @@ def _handle_llm(user_id: str, text: str):
     reaction = (result.get("reaction") or "").strip()
 
     if intent == "record" and result.get("foods"):
-        # -----------------------------------------------------------
-        # 【修正】入力テキストの前置きから日付とスロットを抽出。
-        # _pending にはこの値で保存し、_save_foods() で正しい日付に入る。
-        # -----------------------------------------------------------
+        # 入力テキストの前置きから日付とスロットを抽出
         m_date = DATE_PAT.match(text)
-        rec_date = _norm_date(m_date.groups() if m_date else None)
+        rec_date = ref_date or _norm_date(m_date.groups() if m_date else None)
         tail = text[(m_date.end() if m_date else 0):].strip()
 
         slot_from_text = None
@@ -773,7 +801,7 @@ def _handle_llm(user_id: str, text: str):
         _pending[user_id] = {
             "foods": foods,
             "meal_slot": slot,
-            "date": rec_date,        # ← 抽出日付 (前置きの 9/10 が入る)
+            "date": rec_date,
         }
         total_kcal = sum(float(f.get("kcal") or 0) for f in foods)
         lines = []
@@ -797,6 +825,7 @@ def _handle_llm(user_id: str, text: str):
     if not parts:
         parts = ["なるほど！食事の報告は『ラーメン食べた』など自由文でOKです"]
     return TextSendMessage(text="\n".join(parts))
+
 
 def _format_record(d, p):
     return (
