@@ -1,4 +1,4 @@
-"""SQLite 永続化."""
+"""SQLite / Turso(libsql) 永続化."""
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -10,18 +10,60 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
+class _CompatCursor:
+    """libsql のカーソルを sqlite3.Row 互換(名前アクセス可)に変換するラッパー."""
+
+    def __init__(self, cur):
+        self._cur = cur
+        desc = getattr(cur, "description", None)
+        self._cols = [d[0] for d in desc] if desc else []
+
+    def fetchone(self):
+        row = self._cur.fetchone()
+        if row is None:
+            return None
+        return dict(zip(self._cols, row))
+
+    def fetchall(self):
+        return [dict(zip(self._cols, r)) for r in self._cur.fetchall()]
+
+    @property
+    def rowcount(self):
+        return self._cur.rowcount
+
+
+class _CompatConn:
+    """libsql 接続を sqlite3.Connection 風に包むラッパー."""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def execute(self, sql, params=()):
+        return _CompatCursor(self._conn.execute(sql, params))
+
+    def executescript(self, sql):
+        return self._conn.executescript(sql)
+
+    def commit(self):
+        return self._conn.commit()
+
+    def sync(self):
+        return self._conn.sync()
+
+    def close(self):
+        return self._conn.close()
+
+
 @contextmanager
 def get_conn():
     if settings.TURSO_DATABASE_URL:
         import libsql
-        conn = libsql.connect(
+        raw = libsql.connect(
             "replica.db",
             sync_url=settings.TURSO_DATABASE_URL,
             auth_token=settings.TURSO_AUTH_TOKEN,
         )
-        # 【重要】SQLiteと同じく行を名前でアクセス可能にする。
-        # これが無いと libsql はタプルを返し、r["kcal"] 等が TypeError になる。
-        conn.row_factory = sqlite3.Row
+        conn = _CompatConn(raw)
     else:
         conn = sqlite3.connect(settings.DB_PATH)
         conn.row_factory = sqlite3.Row
@@ -32,6 +74,7 @@ def get_conn():
             conn.sync()   # 書き込みをTursoへ送信
     finally:
         conn.close()
+
 
 
 
