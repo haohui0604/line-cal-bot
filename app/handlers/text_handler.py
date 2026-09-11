@@ -179,27 +179,31 @@ def _slot_to_english(slot: str) -> str:
 
 
 def _finish_setup(user_id: str, data: dict, months):
-    """初期設定ウィザードの最終計算と目標登録."""
     purpose = data["purpose"]
     weight = data["weight"]
     goal_w = data.get("goal_weight")
-
-    # 粗い維持カロリー推定: 体重 × 33 kcal (軽〜中活動の目安)
     maintenance = weight * 33.0
     target = maintenance
     warn = []
     if purpose == "減量":
-        if goal_w and months and goal_w < weight:
+        if goal_w is not None and months and goal_w < weight:
             delta = weight - goal_w
             deficit_day = delta * 7200.0 / (months * 30.0)
             target = maintenance - deficit_day
             if deficit_day > 1000:
                 warn.append(
-                    "⚠ 目標ペースが急激です（1日あたり1000kcal超の赤字）。"
+                    "⚠ 目標ペースが急激です（1日1000kcal超の赤字）。"
                     "期間を延ばすことを推奨します")
         else:
             target = maintenance - 500
-            warn.append("目標体重・期間が未設定のため、緩やかな -500kcal/日 で設定しました")
+            warn.append("目標体重・期間が未設定のため、緩やかな -500kcal/日で設定しました")
+    elif purpose == "維持":
+        target = maintenance
+        if goal_w is not None and goal_w < weight - 0.5:
+            warn.append(
+                f"⚠ 「維持」を選択しましたが目標体重{goal_w}kgは"
+                f"現在より{weight - goal_w:.1f}kg低い設定です。"
+                "減量目的に切り替えますか？ →『初期設定』をやり直し")
     elif purpose == "増量":
         target = maintenance + 300
     target = max(1200.0, min(target, 4000.0))
@@ -208,7 +212,7 @@ def _finish_setup(user_id: str, data: dict, months):
     lines = ["🎯 初期設定が完了しました！", "",
              f"目的: {purpose}",
              f"現体重: {weight}kg"]
-    if goal_w:
+    if goal_w is not None:
         lines.append(f"目標体重: {goal_w}kg")
     if months:
         lines.append(f"期間: {months}ヶ月")
@@ -221,6 +225,7 @@ def _finish_setup(user_id: str, data: dict, months):
               "毎日『消費 ○○○○』を記録すると赤字計算の精度が上がります",
               "変更はいつでも『目標 1800』『初期設定』でできます"]
     return TextSendMessage(text="\n".join(lines))
+
 
 
 def handle_text(user_id: str, text: str):
