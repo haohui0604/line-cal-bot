@@ -747,19 +747,38 @@ def _handle_llm(user_id: str, text: str):
     reaction = (result.get("reaction") or "").strip()
 
     if intent == "record" and result.get("foods"):
+        # -----------------------------------------------------------
+        # 【修正】入力テキストの前置きから日付とスロットを抽出。
+        # _pending にはこの値で保存し、_save_foods() で正しい日付に入る。
+        # -----------------------------------------------------------
+        m_date = DATE_PAT.match(text)
+        rec_date = _norm_date(m_date.groups() if m_date else None)
+        tail = text[(m_date.end() if m_date else 0):].strip()
+
+        slot_from_text = None
+        for kw in ("朝食", "昼食", "夕食", "夜食", "間食"):
+            if kw in tail:
+                slot_from_text = _slot_to_english(kw)
+                break
+        if slot_from_text is None:
+            for kw in ("朝", "昼", "夕", "夜", "間"):
+                if kw in tail:
+                    slot_from_text = _slot_to_english(kw)
+                    break
+
         foods = result["foods"]
-        slot = result.get("meal_slot") or "snack"
+        slot = slot_from_text or result.get("meal_slot") or "snack"
         _pending[user_id] = {
             "foods": foods,
             "meal_slot": slot,
-            "date": _today(),
+            "date": rec_date,        # ← 抽出日付 (前置きの 9/10 が入る)
         }
         total_kcal = sum(float(f.get("kcal") or 0) for f in foods)
         lines = []
         if reaction:
             lines.append(reaction)
         lines.append("")
-        lines.append("AI推定 (記録前の確認):")
+        lines.append(f"AI推定 (記録前の確認) → {rec_date} {slot}:")
         for f in foods:
             lines.append(
                 f"・{f.get('name','?')} {float(f.get('kcal') or 0):.0f}kcal"
@@ -776,7 +795,6 @@ def _handle_llm(user_id: str, text: str):
     if not parts:
         parts = ["なるほど！食事の報告は『ラーメン食べた』など自由文でOKです"]
     return TextSendMessage(text="\n".join(parts))
-
 
 def _format_record(d, p):
     return (
