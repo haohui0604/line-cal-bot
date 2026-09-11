@@ -282,7 +282,17 @@ def handle_text(user_id: str, text: str):
             if text in ("いいえ", "やめる", "キャンセル"):
                 _modify_pending.pop(user_id)
                 return TextSendMessage(text="修正をキャンセルしました")
-
+                
+                def handle_text(user_id: str, text: str):
+                    text = text.strip()
+                    # --- 修正前の応答を予想外テキストで中断した時の掃除 ---
+        if (user_id in _pending and 
+            text not in ("確認", "確定", "キャンセル", "はい", "いいえ")):
+                if not text.startswith(("自由", "質問", "教えて")):
+                    # 直前の質問は強制クリア
+                    _pending.pop(user_id, None)
+                    # --- 既存の _setup_pending / _pending / bulk_pending 判定はそのまま ---
+        
         # 0.55) 初期設定ウィザード
         if text in ("初期設定", "セットアップ"):
             _setup_pending[user_id] = {"step": 1, "data": {}}
