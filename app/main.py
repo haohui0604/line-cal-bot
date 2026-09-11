@@ -1,8 +1,8 @@
-# app/main.py
 from fastapi import FastAPI, Request, Header, HTTPException
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, ImageMessage   # ← 追加
+from linebot.models import MessageEvent, TextMessage, ImageMessage, PostbackEvent
+from linebot.models import TextSendMessage
 from app.config import settings
 from app.services.db import init_db
 from app.webhook import on_message
@@ -41,12 +41,29 @@ async def callback(
     return {"ok": True}
 
 
-# ★ 変更点：TextMessage と ImageMessage をそれぞれ登録 ★
+# テキストメッセージ
 @handler.add(MessageEvent, message=TextMessage)
 def _on_text(event):
     on_message(event, line_bot_api)
 
 
+# 画像メッセージ（← 前回の修正。これが無いと画像が無言になる）
 @handler.add(MessageEvent, message=ImageMessage)
 def _on_image(event):
     on_message(event, line_bot_api)
+
+
+# リッチメニュー等のpostback（退会など）→ 落ちずにテキスト返信
+@handler.add(PostbackEvent)
+def _on_postback(event):
+    try:
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=(
+                "ボタン操作を受け付けました。\n"
+                "メニューの操作は文字入力でもできます：\n"
+                "・集計 ・履歴 ・週次 ・月次 ・体重 ・初期設定"
+            )),
+        )
+    except Exception:
+        logger.exception("postback reply failed")
