@@ -257,15 +257,25 @@ def fetch_latest_weight(user_id: str, on_or_before: str = None):
 
 
 def fetch_weight_series(user_id: str, days: int = 7):
-    """直近days日分の体重系列。未入力日は直前の記録値で繰越し（is_measured=0=推定）."""
+    """直近days日分の体重系列。未入力日は直前の値(過去日も含む)で繰越."""
     from datetime import date as _date, timedelta
     with get_conn() as c:
         rows = c.execute(
             "SELECT date, weight_kg, is_measured FROM weight_logs"
             " WHERE user_id=? ORDER BY date", (user_id,)).fetchall()
     by_date = {r["date"]: dict(r) for r in rows}
+
     end = _date.today()
+    window_start = end - timedelta(days=days - 1)
     result, last = [], None
+
+    # ウィンドウ外の最新値を carryover の起点にする
+    for d in list(by_date.keys()):
+        if d > window_start.isoformat():
+            break
+        last = by_date[d]
+
+    # ウィンドウ内を chronological に走査
     for i in range(days - 1, -1, -1):
         d = (end - timedelta(days=i)).isoformat()
         if d in by_date:
