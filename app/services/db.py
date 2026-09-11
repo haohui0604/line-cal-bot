@@ -242,6 +242,7 @@ def find_entry_candidates(*, user_id: str, date: str,
         rows = c.execute(sql, params).fetchall()
     return [dict(r) for r in rows]
 
+
 def fetch_latest_weight(user_id: str, on_or_before: str = None):
     """指定日以前の最新体重を返す（未入力日の繰越し補完用）."""
     sql = ("SELECT date, weight_kg, is_measured FROM weight_logs"
@@ -270,8 +271,8 @@ def fetch_weight_series(user_id: str, days: int = 7):
     result, last = [], None
 
     # ウィンドウ外の最新値を carryover の起点にする
-    for d in list(by_date.keys()):
-        if d > window_start.isoformat():
+    for d in sorted(by_date.keys()):
+        if d >= window_start.isoformat():
             break
         last = by_date[d]
 
@@ -286,7 +287,9 @@ def fetch_weight_series(user_id: str, days: int = 7):
             result.append({"date": d, "weight_kg": last["weight_kg"],
                            "is_measured": 0})
     return result
-    def fetch_entries_for_date(user_id: str, date: str) -> List[Dict[str, Any]]:
+
+
+def fetch_entries_for_date(user_id: str, date: str) -> List[Dict[str, Any]]:
     """指定日の食事明細を返す（AIコンテキスト注入用）."""
     with get_conn() as c:
         rows = c.execute(
