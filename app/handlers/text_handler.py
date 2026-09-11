@@ -11,7 +11,6 @@ from app.services.db import (
     fetch_day_summary, fetch_recent_history, fetch_today_food_names,
     update_entry_kcal, find_entry_candidates,
     fetch_latest_weight, fetch_weight_series, fetch_entries_for_date,
-
 )
 from app.services.calorie_calc import parse_record_line
 from app.handlers.flex_builder import (
