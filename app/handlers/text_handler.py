@@ -11,6 +11,7 @@ from app.services.db import (
     fetch_day_summary, fetch_recent_history, fetch_today_food_names,
     update_entry_kcal, find_entry_candidates,
     fetch_latest_weight, fetch_weight_series, fetch_entries_for_date,
+    load_user_persona, save_user_persona,
 )
 from app.services.calorie_calc import parse_record_line
 from app.handlers.flex_builder import (
@@ -78,6 +79,7 @@ HELP_TEXT = (
     "\n"
     "【初期設定】\n"
     "・『初期設定』→ 目的と体重から目標kcalを自動設定\n"
+    "・『人格設定』→ AIの名前・性格・一人称を自由にカスタマイズ\n"
     "\n"
     "【記録】\n"
     "・『朝 食パン100g 250kcal』→ 即記録\n"
@@ -114,6 +116,29 @@ _pending: dict = {}           # user_id -> {"foods": [...], "meal_slot": str, "d
 _modify_pending: dict = {}    # user_id -> {"candidates": [...], "new_kcal": float}
 _bulk_pending: dict = {}      # user_id -> {"rows": [parsed, ...]}
 _setup_pending: dict = {}     # user_id -> {"step": int, "data": dict}
+_persona_pending: dict = {}   # user_id -> {"step": int, "data": dict}
+
+# 人格設定ウィザード（全問自由記述。「デフォルト」「なし」「スキップ」で既定値）
+_PERSONA_STEPS = [
+    ("bot_name",
+     "Q1. AIの名前を教えてください（自由記述・12文字以内）\n"
+     "例: ここちゃん / 栄養士さん / おがさアシスタント\n"
+     "希望がなければ『デフォルト』で「アシスタント」になります"),
+    ("bot_tone",
+     "Q2. 性格・口調を自由に書いてください\n"
+     "例: 励まし強め / 統計重視で淡々と / ゆるふわ系 / 塩分に厳しめ\n"
+     "希望がなければ『デフォルト』でOK"),
+    ("bot_pronoun",
+     "Q3. 一人称を自由に書いてください\n"
+     "例: わたし / ボク / オレ / わたくし\n"
+     "希望がなければ『デフォルト』で「わたし」になります"),
+]
+
+_PERSONA_DEFAULT_MAP = {
+    "bot_name": "アシスタント",
+    "bot_tone": "",
+    "bot_pronoun": "わたし",
+}
 
 
 def _today() -> str:
@@ -224,9 +249,9 @@ def _finish_setup(user_id: str, data: dict, months):
     lines += ["",
               "※維持カロリーは簡易推定（体重×33）です。"
               "毎日『消費 ○○○○』を記録すると赤字計算の精度が上がります",
-              "変更はいつでも『目標 1800』『初期設定』でできます"]
+              "変更はいつでも『目標 1800』『初期設定』でできます",
+              "AIの名前や性格は『人格設定』でカスタマイズできます"]
     return TextSendMessage(text="\n".join(lines))
-
 
 
 def handle_text(user_id: str, text: str):
@@ -258,6 +283,11 @@ def handle_text(user_id: str, text: str):
             _pending.pop(user_id)
             return TextSendMessage(text="記録をキャンセルしました")
 
+        # 0.1) pending 応答待ちのまま別テキストが来たら古い確認を掃除
+        if (user_id in _pending
+                and text not in ("確認", "確定", "キャンセル", "はい", "いいえ")):
+            _pending.pop(user_id, None)
+
         # 0.5) 修正コマンドの複数候補からの番号選択
         if user_id in _modify_pending:
             m = MODIFY_CONFIRM_PAT.match(text)
@@ -282,17 +312,55 @@ def handle_text(user_id: str, text: str):
             if text in ("いいえ", "やめる", "キャンセル"):
                 _modify_pending.pop(user_id)
                 return TextSendMessage(text="修正をキャンセルしました")
-                
-                def handle_text(user_id: str, text: str):
-                    text = text.strip()
-                    # --- 修正前の応答を予想外テキストで中断した時の掃除 ---
-        if (user_id in _pending and 
-            text not in ("確認", "確定", "キャンセル", "はい", "いいえ")):
-                if not text.startswith(("自由", "質問", "教えて")):
-                    # 直前の質問は強制クリア
-                    _pending.pop(user_id, None)
-                    # --- 既存の _setup_pending / _pending / bulk_pending 判定はそのまま ---
-        
+
+        # 0.53) 人格設定ウィザード（回答処理）
+        if user_id in _persona_pending:
+            if text in ("やめる", "キャンセル"):
+                _persona_pending.pop(user_id)
+                return TextSendMessage(text=(
+                    "人格設定を中止しました。いつでも『人格設定』でやり直せます"
+                ))
+            st = _persona_pending[user_id]
+            key, _prompt = _PERSONA_STEPS[st["step"] - 1]
+            if text in ("デフォルト", "なし", "スキップ"):
+                val = _PERSONA_DEFAULT_MAP[key]
+            else:
+                val = text.strip()
+            st["data"][key] = val
+            st["step"] += 1
+            if st["step"] <= len(_PERSONA_STEPS):
+                return TextSendMessage(text=_PERSONA_STEPS[st["step"] - 1][1])
+            # 全問完了 → 保存
+            d = st["data"]
+            save_user_persona(
+                user_id=user_id,
+                bot_name=d["bot_name"][:12],
+                bot_tone=d["bot_tone"][:100],
+                bot_pronoun=d["bot_pronoun"][:6],
+            )
+            _persona_pending.pop(user_id)
+            tone_disp = d["bot_tone"] or "デフォルト（明るく前向き）"
+            return TextSendMessage(text=(
+                "✨ 人格設定が完了しました！\n\n"
+                f"名前: {d['bot_name']}\n"
+                f"性格: {tone_disp}\n"
+                f"一人称: {d['bot_pronoun']}\n\n"
+                "『あなたは誰？』と聞くと名乗ります。\n"
+                "変更はいつでも『人格設定』でできます"
+            ))
+
+        # 0.54) 人格設定の開始
+        if text in ("人格設定", "キャラ設定", "性格設定"):
+            cur = load_user_persona(user_id)
+            tone_cur = cur["bot_tone"] or "デフォルト"
+            _persona_pending[user_id] = {"step": 1, "data": {}}
+            return TextSendMessage(text=(
+                "🎭 人格設定を始めます（いつでも『やめる』で中止）\n"
+                f"現在: 名前={cur['bot_name']} / 一人称={cur['bot_pronoun']}"
+                f" / 性格={tone_cur}\n\n"
+                + _PERSONA_STEPS[0][1]
+            ))
+
         # 0.55) 初期設定ウィザード
         if text in ("初期設定", "セットアップ"):
             _setup_pending[user_id] = {"step": 1, "data": {}}
@@ -741,6 +809,7 @@ def handle_text(user_id: str, text: str):
         logger.exception("handle_text error")
         return TextSendMessage(text=f"⚠ エラー: {type(exc).__name__}: {str(exc)[:200]}")
 
+
 def _detect_ref_date(text: str) -> str:
     """発言中の日付参照を検出。なければ None（=今日）.
     対応: 「9/10」「9月10日」「昨日」「おととい」
@@ -776,7 +845,7 @@ def _handle_llm(user_id: str, text: str):
         context["ref_date_burn"] = day_sum["burn_kcal"]
 
     try:
-        result = chat(text, context)
+        result = chat(text, context, persona=load_user_persona(user_id))
     except Exception:
         logger.exception("LLM call failed")
         return TextSendMessage(text=(
