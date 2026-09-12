@@ -76,10 +76,6 @@ def get_conn():
         conn.close()
 
 
-
-
-
-
 def init_db():
     """migrations/*.sql をファイル名順(001→002→…)に冪等適用する."""
     import glob
@@ -220,8 +216,6 @@ def fetch_recent_history(user_id: str, days: int = 7) -> List[Dict[str, Any]]:
          "deficit_kcal": _get(r, "consumed_kcal", 2) - _get(r, "intake_kcal", 1)}
         for r in rows
     ]
-
-
 
 
 # ---- goals (目標摂取カロリー) ----
@@ -370,13 +364,44 @@ def fetch_entries_for_date(user_id: str, date: str) -> List[Dict[str, Any]]:
             (user_id, date)).fetchall()
     return [dict(r) for r in rows]
 
-        conn.execute("""
-        CREATE TABLE IF NOT EXISTS user_settings (
-          user_id      TEXT PRIMARY KEY,
-          bot_name     TEXT NOT NULL DEFAULT 'アシスタント',
-          bot_tone     TEXT NOT NULL DEFAULT '',
-          bot_pronoun  TEXT NOT NULL DEFAULT 'わたし',
-          updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-        """)
 
+# ---- 人格設定 (user_settings) ----
+
+_PERSONA_DEFAULTS = {
+    "bot_name": "アシスタント",
+    "bot_tone": "",
+    "bot_pronoun": "わたし",
+}
+
+
+def save_user_persona(user_id: str, bot_name: str,
+                      bot_tone: str, bot_pronoun: str) -> None:
+    """人格データを upsert で保存."""
+    with get_conn() as c:
+        c.execute("""
+            INSERT INTO user_settings
+              (user_id, bot_name, bot_tone, bot_pronoun, updated_at)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(user_id) DO UPDATE SET
+              bot_name=excluded.bot_name,
+              bot_tone=excluded.bot_tone,
+              bot_pronoun=excluded.bot_pronoun,
+              updated_at=CURRENT_TIMESTAMP
+        """, (user_id, bot_name, bot_tone, bot_pronoun))
+
+
+def load_user_persona(user_id: str) -> dict:
+    """人格データを読み出す（未設定ならデフォルト値）."""
+    with get_conn() as c:
+        r = c.execute(
+            "SELECT bot_name, bot_tone, bot_pronoun"
+            " FROM user_settings WHERE user_id=?",
+            (user_id,),
+        ).fetchone()
+    if not r:
+        return dict(_PERSONA_DEFAULTS)
+    try:
+        return {"bot_name": r["bot_name"], "bot_tone": r["bot_tone"],
+                "bot_pronoun": r["bot_pronoun"]}
+    except (TypeError, KeyError, IndexError):
+        return {"bot_name": r[0], "bot_tone": r[1], "bot_pronoun": r[2]}
