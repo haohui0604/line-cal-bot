@@ -28,21 +28,23 @@ PROTEIN_TARGET_G = 100.0
 
 # ---- パターン集 ----
 GOAL_PAT = re.compile(r"^目標(?:kcal)?\s*[:：]?\s*(\d+)")
-# 体重: 日付指定可 + 「推定」フラグ
-# 例:「体重 72.5」「8/29 体重 75.8」「8/26 体重 76.5推定」
+# 体重記録: 日付指定可 + 「推定」フラグ
+# 例:「体重 72.5」「1/1 体重 72」「1/1 体重 72.5推定」
 WEIGHT_PAT = re.compile(
     r"^(?:(\d{1,2})/(\d{1,2})\s+)?体重\s+([0-9]+(?:\.[0-9]+)?)(推定)?"
     r"(?:\s+(?:体脂肪|F|脂肪)\s*([0-9]+(?:\.[0-9]+)?))?"
     r"(?:\s+(?:筋肉|M)\s*([0-9]+(?:\.[0-9]+)?))?"
     r"(?:\s+(?:BMR|基礎代謝)\s*([0-9]+))?"
 )
-# 消費: 日付指定可。例:「運動 320」「9/10 消費 2188 活動195 安静1993」
+# 消費カロリー: 日付指定可
+# 例:「運動 320」「1/1 消費 2200 活動 500 安静 1700」
 ACTIVITY_PAT = re.compile(
     r"^(?:(\d{1,2})/(\d{1,2})\s+)?(?:運動|活動|消費)\s+([0-9]+)(?:\s*kcal)?"
     r"(?:\s+(?:活動|active|ACTIVE)\s*([0-9]+))?"
     r"(?:\s+(?:安静|resting|RESTING|基礎代謝|basal)\s*([0-9]+))?"
 )
-# 修正: 「修正 9/9 昼 牛丼並盛 720」 / 「修正 9/9 牛丼 720」
+# 過去データ修正: スロットと食品名（部分一致）
+# 例:「修正 1/1 昼 牛丼 720」「修正 1/1 牛丼 720」
 MODIFY_PAT = re.compile(
     r"^修正\s+(\d{1,2})/(\d{1,2})"
     r"(?:\s+(朝食|昼食|夕食|夜食|間食|朝|昼|夜|夕|間))?"
@@ -52,7 +54,8 @@ MODIFY_PAT = re.compile(
 # 修正コマンドの複数候補からの番号選択
 MODIFY_CONFIRM_PAT = re.compile(r"^修正候補\s+(\d+)\s*$")
 
-# 「牛丼 9/9 昼 1020kcal」のような末尾日付+スロット指定の記録用
+# 末尾日付+スロット指定の食事記録
+# 例:「牛丼 1/1 昼 720kcal」
 TRAILING_DATE_SLOT_PAT = re.compile(
     r"^(?P<food>.+?)\s+"
     r"(?P<mo>\d{1,2})/(?P<d>\d{1,2})\s+"
@@ -89,16 +92,16 @@ HELP_TEXT = (
     "\n"
     "【過去データ】\n"
     "・『一括』→ 複数行貼付け →『確定』\n"
-    "・『修正 9/9 昼 牛丼 720kcal』→ 過去記録の修正\n"
-    "・『9/10 消費 2188』『8/29 体重 75.8』→ 日付指定可\n"
+    "・『修正 1/1 昼 牛丼 720kcal』→ 過去記録の修正\n"
+    "・『1/1 消費 2200』『1/1 体重 72』→ 日付指定可\n"
     "\n"
     "【体組成・運動】\n"
-    "・『体重 72.5 体脂肪18 筋肉52 BMR1500』\n"
+    "・『体重 72 体脂肪18 筋肉52 BMR1500』\n"
     "・『体重』→ 直近7日の推移（未入力日は直前値で表示）\n"
     "\n"
     "【確認】\n"
     "・『集計』『履歴』『週次』『月次』\n"
-    "・『目標 2000』→ 目標設定 /『目標』→ 確認\n"
+    "・『目標 1800』→ 目標設定 /『目標』→ 確認\n"
     "\n"
     "【相談】\n"
     "・『あと何kcal食べていい？』など自由文でAI相談"
@@ -112,17 +115,17 @@ SETUP_PURPOSES = {
 }
 
 # LLM 推定の未確定レコード (Render 再起動で消える簡易実装)
-_pending: dict = {}           # user_id -> {"foods": [...], "meal_slot": str, "date": str}
-_modify_pending: dict = {}    # user_id -> {"candidates": [...], "new_kcal": float}
-_bulk_pending: dict = {}      # user_id -> {"rows": [parsed, ...]}
-_setup_pending: dict = {}     # user_id -> {"step": int, "data": dict}
-_persona_pending: dict = {}   # user_id -> {"step": int, "data": dict}
+_pending: dict = {}
+_modify_pending: dict = {}
+_bulk_pending: dict = {}
+_setup_pending: dict = {}
+_persona_pending: dict = {}
 
 # 人格設定ウィザード（全問自由記述。「デフォルト」「なし」「スキップ」で既定値）
 _PERSONA_STEPS = [
     ("bot_name",
      "Q1. AIの名前を教えてください（自由記述・12文字以内）\n"
-     "例: ここちゃん / 栄養士さん / おがさアシスタント\n"
+     "例: ここちゃん / パートナー / 執事くん\n"
      "希望がなければ『デフォルト』で「アシスタント」になります"),
     ("bot_tone",
      "Q2. 性格・口調を自由に書いてください\n"
@@ -155,7 +158,6 @@ def _norm_date(m):
 
 
 def _resolve_target_kcal(user_id: str, iso_date: str) -> float:
-    """DB の goals から該当日以下の最新目標を取得。未設定なら既定値."""
     g = get_goal(user_id, iso_date)
     return float(g) if g is not None else TARGET_KCAL_DEFAULT
 
@@ -227,8 +229,7 @@ def _finish_setup(user_id: str, data: dict, months):
         target = maintenance
         if goal_w is not None and goal_w < weight - 0.5:
             warn.append(
-                f"⚠ 「維持」を選択しましたが目標体重{goal_w}kgは"
-                f"現在より{weight - goal_w:.1f}kg低い設定です。"
+                "⚠ 「維持」を選択しましたが目標体重は現在より低い設定です。"
                 "減量目的に切り替えますか？ →『初期設定』をやり直し")
     elif purpose == "増量":
         target = maintenance + 300
@@ -237,19 +238,17 @@ def _finish_setup(user_id: str, data: dict, months):
 
     lines = ["🎯 初期設定が完了しました！", "",
              f"目的: {purpose}",
-             f"現体重: {weight}kg"]
+             f"現体重: {weight}kg",
+             f"維持カロリー(推定): {maintenance:.0f}kcal/日",
+             f"→ 目標摂取カロリー: {target:.0f}kcal/日"]
     if goal_w is not None:
         lines.append(f"目標体重: {goal_w}kg")
     if months:
         lines.append(f"期間: {months}ヶ月")
-    lines += ["",
-              f"維持カロリー(推定): {maintenance:.0f}kcal/日",
-              f"→ 目標摂取カロリー: {target:.0f}kcal/日"]
-    lines += warn
-    lines += ["",
+    lines += ["", *warn,
               "※維持カロリーは簡易推定（体重×33）です。"
               "毎日『消費 ○○○○』を記録すると赤字計算の精度が上がります",
-              "変更はいつでも『目標 1800』『初期設定』でできます",
+              "変更はいつでも『目標 数値』『初期設定』でできます",
               "AIの名前や性格は『人格設定』でカスタマイズできます"]
     return TextSendMessage(text="\n".join(lines))
 
@@ -265,7 +264,7 @@ def handle_text(user_id: str, text: str):
                 "『使い方』で全機能を確認できます"
             ))
 
-        # 0) LLM 推定の確定/取消 (pending は日付も保持)
+        # 0) LLM 推定の確定/取消
         if user_id in _pending and text in (
             "はい", "うん", "記録", "ok", "OK", "Yes", "YES"
         ):
@@ -283,7 +282,6 @@ def handle_text(user_id: str, text: str):
             _pending.pop(user_id)
             return TextSendMessage(text="記録をキャンセルしました")
 
-        # 0.1) pending 応答待ちのまま別テキストが来たら古い確認を掃除
         if (user_id in _pending
                 and text not in ("確認", "確定", "キャンセル", "はい", "いいえ")):
             _pending.pop(user_id, None)
@@ -330,7 +328,6 @@ def handle_text(user_id: str, text: str):
             st["step"] += 1
             if st["step"] <= len(_PERSONA_STEPS):
                 return TextSendMessage(text=_PERSONA_STEPS[st["step"] - 1][1])
-            # 全問完了 → 保存
             d = st["data"]
             save_user_persona(
                 user_id=user_id,
@@ -391,13 +388,15 @@ def handle_text(user_id: str, text: str):
                 st["step"] = 2
                 return TextSendMessage(text=(
                     f"目的は「{purpose}」ですね。\n\n"
-                    "Q2. 現在の体重は？（例: 75.8）"
+                    "Q2. 現在の体重は？（例: 70.5）"
                 ))
 
             if st["step"] == 2:
                 m2 = re.match(r"^([0-9]+(?:\.[0-9]+)?)\s*(?:kg)?$", text)
                 if not m2:
-                    return TextSendMessage(text="体重を数値で入力してください（例: 75.8）")
+                    return TextSendMessage(text=(
+                        "体重を数値で入力してください（例: 70.5）"
+                    ))
                 w = float(m2.group(1))
                 if w < 30 or w > 250:
                     return TextSendMessage(text="30〜250の範囲で入力してください")
@@ -407,7 +406,7 @@ def handle_text(user_id: str, text: str):
                 st["step"] = 3
                 return TextSendMessage(text=(
                     f"現体重 {w}kg を記録しました。\n\n"
-                    "Q3. 目標体重は？（例: 72）\n"
+                    "Q3. 目標体重は？（例: 65）\n"
                     "決まっていなければ『スキップ』"
                 ))
 
@@ -446,7 +445,6 @@ def handle_text(user_id: str, text: str):
 
         # 0.6) 一括登録モード
         if text in ("一括", "一括登録", "import", "Import"):
-            # モード中の再入ガード: 読込済みデータを消さない
             if user_id in _bulk_pending and _bulk_pending[user_id]["rows"]:
                 n = len(_bulk_pending[user_id]["rows"])
                 return TextSendMessage(text=(
@@ -457,9 +455,9 @@ def handle_text(user_id: str, text: str):
             return TextSendMessage(text=(
                 "📥 一括登録モードです。1行1件で貼り付けてください\n"
                 "例:\n"
-                "9/1 朝 食パン 250kcal\n"
-                "9/1 昼 牛丼並盛 700kcal\n"
-                "9/1 夜 鶏むね150g\n\n"
+                "1/1 朝 食パン 250kcal\n"
+                "1/1 昼 牛丼 700kcal\n"
+                "1/1 夜 鶏むね 150g\n\n"
                 "※ kcalが無い行はAIが推定して登録します\n"
                 "何度でも追送OK。終わったら「確定」、やめるときは「キャンセル」"
             ))
@@ -473,7 +471,6 @@ def handle_text(user_id: str, text: str):
                 if not rows:
                     return TextSendMessage(text="登録対象がありませんでした")
 
-                # kcal 無し行の推定: まず batch → 失敗時に per-item
                 need_estimate = [r for r in rows
                                  if (r.get("kcal") or 0.0) <= 0]
                 already_known = [r for r in rows
@@ -547,7 +544,6 @@ def handle_text(user_id: str, text: str):
                         msg += f"  …他 {len(failed) - 5}件"
                 return TextSendMessage(text=msg)
 
-            # モード中の入力 = 過去ログ行としてパース
             added, skipped = [], []
             for line in text.splitlines():
                 line = line.strip()
@@ -586,7 +582,7 @@ def handle_text(user_id: str, text: str):
         if text in ("集計", "今日", "summary", "Summary"):
             s = fetch_day_summary(user_id, _today())
             return FlexSendMessage(
-                alt_text=f"{_today()} 集計 {s['intake_kcal']:.0f}kcal",
+                alt_text=f"{_today()} 集計",
                 contents=summary_flex(s),
             )
 
@@ -595,7 +591,7 @@ def handle_text(user_id: str, text: str):
             rows = fetch_recent_history(user_id, days=7)
             return TextSendMessage(text=_format_history(rows))
 
-        # 3.5) 体重推移（未入力日は直前値で繰越し表示）
+        # 3.5) 体重推移
         if text in ("体重", "体重履歴", "体重推移"):
             rows = fetch_weight_series(user_id, days=7)
             if not rows:
@@ -617,14 +613,14 @@ def handle_text(user_id: str, text: str):
             rows = fetch_recent_history(user_id, days=7)
             tgt = _resolve_target_kcal(user_id, _today())
             return FlexSendMessage(
-                alt_text=f"直近7日 レポート (目標 {tgt:.0f}kcal)",
+                alt_text="直近7日 レポート",
                 contents=weekly_chart_flex(rows, days=7, target_kcal=tgt),
             )
         if text in ("月次", "月間", "month", "Month"):
             rows = fetch_recent_history(user_id, days=30)
             tgt = _resolve_target_kcal(user_id, _today())
             return FlexSendMessage(
-                alt_text=f"直近30日 レポート (目標 {tgt:.0f}kcal)",
+                alt_text="直近30日 レポート",
                 contents=monthly_summary_flex(rows, target_kcal=tgt),
             )
 
@@ -634,7 +630,7 @@ def handle_text(user_id: str, text: str):
             kcal = float(m.group(1))
             if kcal < 1000 or kcal > 4000:
                 return TextSendMessage(text=(
-                    f"⚠ {kcal:.0f}kcal は範囲外です。1000〜4000 で指定してください"
+                    "⚠ 範囲外です。1000〜4000 kcal で指定してください"
                 ))
             set_goal(user_id=user_id, date=_today(), target_kcal=kcal)
             s = fetch_day_summary(user_id, _today())
@@ -647,11 +643,11 @@ def handle_text(user_id: str, text: str):
             tgt = _resolve_target_kcal(user_id, _today())
             return TextSendMessage(text=(
                 f"今の目標摂取カロリーは {tgt:.0f}kcal です\n"
-                "変更: 『目標 1800』のように送ってください\n"
+                "変更: 『目標 数値』のように送ってください\n"
                 "自動計算: 『初期設定』から目的と体重を入力"
             ))
 
-        # 6) 体重記録 (日付指定可・「推定」フラグ対応)
+        # 6) 体重記録
         m = WEIGHT_PAT.match(text)
         if m:
             rec_date = _norm_date((m.group(1), m.group(2))) if m.group(1) else _today()
@@ -680,7 +676,7 @@ def handle_text(user_id: str, text: str):
                 base += " (" + " / ".join(extra) + ")"
             return TextSendMessage(text=base + "\n『体重』で推移を確認できます")
 
-        # 7) 活動(消費)カロリー（日付指定可）
+        # 7) 活動(消費)カロリー
         m = ACTIVITY_PAT.match(text)
         if m:
             rec_date = _norm_date((m.group(1), m.group(2))) if m.group(1) else _today()
@@ -703,7 +699,7 @@ def handle_text(user_id: str, text: str):
                 f"赤字 {s['deficit_kcal']:+.0f}kcal"
             ))
 
-        # 8) 過去データ修正（旧kcal表示 / 3段フォールバック検索）
+        # 8) 過去データ修正
         m = MODIFY_PAT.match(text)
         if m:
             mo, d = int(m.group(1)), int(m.group(2))
@@ -719,18 +715,15 @@ def handle_text(user_id: str, text: str):
                 user_id=user_id, date=target_date,
                 meal_slot=slot_en, food_name_like=food_name,
             ) if slot_en else []
-
             if not candidates:
                 candidates = find_entry_candidates(
                     user_id=user_id, date=target_date,
                     food_name_like=food_name,
                 )
-
             if not candidates:
                 candidates = find_entry_candidates(
                     user_id=user_id, date=target_date,
                 )
-
             if not candidates:
                 return TextSendMessage(text=(
                     f"{target_date} に該当する記録が見つかりませんでした。\n"
@@ -761,7 +754,7 @@ def handle_text(user_id: str, text: str):
             lines.append("例: 『修正候補 1』 / キャンセル: 『いいえ』")
             return TextSendMessage(text="\n".join(lines))
 
-        # 9) 末尾日付付きの食事記録 (確認フロー・日付保持)
+        # 9) 末尾日付付きの食事記録
         m = TRAILING_DATE_SLOT_PAT.match(text) or TRAILING_DATE_PAT.match(text)
         if m:
             food = m.group("food").strip()
@@ -786,7 +779,7 @@ def handle_text(user_id: str, text: str):
                 "→「はい」/「いいえ」"
             ))
 
-        # 10) ルールベース食事登録 (kcal 明記時のみ即保存)
+        # 10) ルールベース食事登録
         m = DATE_PAT.match(text)
         body = text[m.end():].strip() if m else text
         parsed = parse_record_line(body)
@@ -811,10 +804,6 @@ def handle_text(user_id: str, text: str):
 
 
 def _detect_ref_date(text: str) -> str:
-    """発言中の日付参照を検出。なければ None（=今日）.
-    対応: 「9/10」「9月10日」「昨日」「おととい」
-    言い回しではなく日付表現だけを見るので、どんな文体でも拾える。
-    """
     from datetime import timedelta
     m = re.search(r"(\d{1,2})[/月](\d{1,2})日?", text)
     if m:
@@ -829,8 +818,6 @@ def _detect_ref_date(text: str) -> str:
 def _handle_llm(user_id: str, text: str):
     from app.services.llm import chat
 
-    # 発言に日付参照があれば、その日のデータをコンテキストに注入する。
-    # 質問の言い回しは問わない（「9/10何食べた？」「10日の夕飯なんだっけ」両方OK）
     ref_date = _detect_ref_date(text)
     context = _build_context(user_id)
     if ref_date and ref_date != _today():
@@ -858,7 +845,6 @@ def _handle_llm(user_id: str, text: str):
     reaction = (result.get("reaction") or "").strip()
 
     if intent == "record" and result.get("foods"):
-        # 入力テキストの前置きから日付とスロットを抽出
         m_date = DATE_PAT.match(text)
         rec_date = ref_date or _norm_date(m_date.groups() if m_date else None)
         tail = text[(m_date.end() if m_date else 0):].strip()
