@@ -27,17 +27,30 @@ MODEL_FALLBACKS = [
     "gemini-2.5-flash-lite",
 ]
 
-SYSTEM_PROMPT = """\
-あなたはLINEのカロリー管理パートナー「おがさのカロリー収支管理」です。
-ユーザーの食事記録とダイエット継続を、明るく前向きな一言で支えます。
+# ---- 人格 (persona) ----
+# ユーザーが『人格設定』でカスタマイズ。未設定時はデフォルト。
+PERSONA_DEFAULT = {
+    "bot_name": "アシスタント",
+    "bot_tone": "",
+    "bot_pronoun": "わたし",
+}
+
+SYSTEM_PROMPT_TEMPLATE = """\
+あなたはLINEのカロリー管理パートナー「{bot_name}」です。
+一人称は「{bot_pronoun}」で統一してください。
+性格・口調: {bot_tone}
+
+ユーザー設定の人格ルール:
+- 「名前は？」「あなたは誰？」「自己紹介して」と聞かれたら、answer で「{bot_name}」と名乗る。
+- AIであることは隠さない。医療的診断・効果の断定（『必ず痩せる』等）は禁止。
 
 必ず次のJSONだけを返してください。説明文・コードフェンス(```)は不要です。
 
-{
+{{
   "intent": "record" | "question" | "chat",
   "reaction": "食事への短い自然なリアクション (例: うまそう！ / たんぱく質しっかり取れてていいね) 40字以内",
   "foods": [
-    {
+    {{
       "name": "食品名",
       "kcal": 数値,
       "protein_g": 数値,
@@ -45,11 +58,11 @@ SYSTEM_PROMPT = """\
       "carb_g": 数値,
       "salt_g": 数値,
       "quantity_g": 数値またはnull
-    }
+    }}
   ],
   "meal_slot": "breakfast" | "lunch" | "dinner" | "snack" | null,
   "answer": "質問・雑談への回答 120字以内"
-}
+}}
 
 ルール:
 - 食事の報告(食べた/飲んだ/これから食べる等)は intent=record。foods は1品ずつ分解し、日本の一般的な食品成分で推定する。推定が困難でも妥当な中央値で必ず数値を入れる。
@@ -58,6 +71,18 @@ SYSTEM_PROMPT = """\
 - reaction は絵文字1個まで。ポジティブに、ただし脂質・塩分が明らかに過多なときは一言だけ優しく注意を添える。
 - 数値は推定であることを前提に、断定的すぎない表現にする。
 """
+
+
+def build_system_prompt(persona: dict | None) -> str:
+    """ユーザー人格を反映した system prompt を組み立てる."""
+    p = {**PERSONA_DEFAULT, **(persona or {})}
+    tone = p["bot_tone"] or "明るく前向き。敬体と砕けた口調の中間で話す。"
+    return SYSTEM_PROMPT_TEMPLATE.format(
+        bot_name=str(p["bot_name"])[:12],
+        bot_pronoun=str(p["bot_pronoun"])[:6],
+        bot_tone=str(tone)[:100],
+    )
+
 
 def _build_user_message(user_message: str, context: dict) -> str:
     lines = [
@@ -97,7 +122,6 @@ def _build_user_message(user_message: str, context: dict) -> str:
     return "\n".join(lines)
 
 
-
 def _post_with_fallback(payload: dict, timeout: float = 30.0) -> dict:
     """MODEL_PRIMARY → FALLBACKS の順に試し、最初に成功したものを返す.
 
@@ -135,10 +159,10 @@ def _post_with_fallback(payload: dict, timeout: float = 30.0) -> dict:
     raise last_exc or RuntimeError("all Gemini models failed")
 
 
-def chat(user_message: str, context: dict) -> dict:
+def chat(user_message: str, context: dict, persona: dict | None = None) -> dict:
     """Gemini へ自由文を投げ、構造化 dict を返す。失敗時は例外."""
     payload = {
-        "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+        "system_instruction": {"parts": [{"text": build_system_prompt(persona)}]},
         "contents": [{
             "parts": [{"text": _build_user_message(user_message, context)}],
         }],
