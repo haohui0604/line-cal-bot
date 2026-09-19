@@ -186,9 +186,27 @@ def _slot_jp(slot: str) -> str:
 def _today() -> str:
     return date.today().isoformat()
 
-from datetime import date, timedelta
 
 def _parse_daily_date(m):
+    today = date.today()
+
+    if m.group(3):
+        return today - timedelta(days=1)
+
+    if m.group(1) and m.group(2):
+        y = today.year
+        d = date(y, int(m.group(1)), int(m.group(2)))
+
+        if d > today:
+            d = date(
+                y - 1,
+                int(m.group(1)),
+                int(m.group(2))
+            )
+
+        return d
+
+    return today
 
 from datetime import date, timedelta
 
