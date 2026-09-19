@@ -1,4 +1,5 @@
 from linebot.models import TextMessage, ImageMessage
+from linebot.exceptions import LineBotApiError
 from app.handlers.text_handler import handle_text
 from app.handlers.image_handler import handle_image
 import logging
@@ -17,4 +18,13 @@ def on_message(event, line_bot_api):
         return
     if out is None:
         return
-    line_bot_api.reply_message(rt, out)
+
+    try:
+        line_bot_api.reply_message(rt, out)
+    except LineBotApiError as e:
+        # コールドスタート等で reply_token が失効していても push で届ける
+        logger.warning("reply failed (%s) → fallback to push", e)
+        try:
+            line_bot_api.push_message(user_id, out)
+        except LineBotApiError:
+            logger.exception("push fallback also failed")
