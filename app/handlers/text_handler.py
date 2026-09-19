@@ -66,12 +66,42 @@ TRAILING_DATE_SLOT_PAT = re.compile(
     r"(?P<kcal>\d+(?:\.\d+)?)\s*kcal\s*$",
     re.IGNORECASE,
 )
+
 TRAILING_DATE_PAT = re.compile(
     r"^(?P<food>.+?)\s+"
     r"(?P<mo>\d{1,2})/(?P<d>\d{1,2})\s+"
     r"(?P<kcal>\d+(?:\.\d+)?)\s*kcal\s*$",
     re.IGNORECASE,
 )
+
+TRAILING_DATE_PAT = re.compile(
+    r"^(?P<food>.+?)\s+"
+    r"(?P<mo>\d{1,2})/(?P<d>\d{1,2})\s+"
+    r"(?P<kcal>\d+(?:\.\d+)?)\s*kcal\s*$",
+    re.IGNORECASE,
+)
+
+# ↓↓↓ この直後に追加 ↓↓↓
+
+# 「今日のレポート」「日次」「集計」「今日」+ 日付指定
+# （9/18の今日のレポート / 昨日の今日のレポート）
+DAILY_PAT = re.compile(
+    r"^(?:(\d{1,2})[/月](\d{1,2})日?の?)?(昨日の)?"
+    r"(今日のレポート|今日|日次|集計)\s*$"
+)
+
+
+def _parse_daily_date(m):
+    """日付指定を解釈。指定なし=今日、昨日の=昨日、M/D=今年（未来なら前年）。"""
+    today = _today()
+    if m.group(3):
+        return today - timedelta(days=1)
+    if m.group(1) and m.group(2):
+        y = today.year
+        d = date(y, int(m.group(1)), int(m.group(2)))
+        return d if d <= today else date(y - 1, int(m.group(1)), int(m.group(2)))
+    return today
+
 
 GREETINGS = {
     "おはよう":         "おはようございます！今日も記録頑張りましょう 🌅",
@@ -622,20 +652,36 @@ def handle_text(user_id: str, text: str):
         if text in ("使い方", "使い方案内", "ヘルプ", "help", "Help", "HELP"):
             return TextSendMessage(text=HELP_TEXT)
 
-        # 2) 集計（AIコメントを別メッセージで先行）
-        if text in ("集計", "今日", "summary", "Summary"):
-            s = fetch_day_summary(user_id, _today())
-            flex = FlexSendMessage(
-                alt_text=f"{_today()} 集計",
-                contents=summary_flex(s),
+        # 2) 今日のレポート（旧「集計」。日付指定可）
+        m = DAILY_PAT.match(text)
+        if m:
+            d = _parse_daily_date(m)
+            label = d.strftime("%Y-%m-%d")
+            s = fetch_day_summary(user_id, label)
+            meals = fetch_day_meals(user_id, label)
+            burn = fetch_day_activity_total(user_id, label)
+            target = _resolve_target_kcal(user_id, label)
+
+            facts = build_daily_facts(
+                date_label=label,
+                intake=s["intake_kcal"], target=target, burn=burn,
+                meals=[f"{k}:{v['food_name']}" for k, v in meals.items()],
             )
-            c = _get_comment(user_id, "summary", {
-                "摂取(kcal)": f"{s['intake_kcal']:.0f}",
-                "消費(kcal)": f"{s['burn_kcal']:.0f}",
-                "収支(kcal)": f"{s['deficit_kcal']:+.0f}",
-                "目標(kcal)": f"{_resolve_target_kcal(user_id, _today()):.0f}",
-            })
-            return [TextSendMessage(text=c), flex] if c else flex
+            comment = generate_daily(
+                facts, persona=load_user_persona(user_id),
+                user_id=user_id, period_key=label,
+            )
+            flex = FlexSendMessage(
+                alt_text=f"{label} 今日のレポート",
+                contents=daily_flex(label, s, meals, burn, target, comment),
+            )
+            flex.quick_reply = qr(
+                pb("今週のレポート", "cmd=weekly"),
+                pb("今月のレポート", "cmd=monthly"),
+                pb("履歴", "cmd=history"),
+            )
+            return flex
+
 
         # 3) 履歴 — 記録単位で一覧（番号付き／そのまま削除できる）
         if text in ("履歴", "history", "History", "りれき"):
@@ -702,14 +748,14 @@ def handle_text(user_id: str, text: str):
             return TextSendMessage(text="\n".join(lines))
 
         # 4) 週次 / 月次 / グラフ
-        if text in ("週次", "週間", "week", "Week", "グラフ"):
+        if text in ("今週のレポート", "今週", "週次", "週間", "week", "Week", "グラフ"):
             rows = fetch_recent_history(user_id, days=7)
             tgt = _resolve_target_kcal(user_id, _today())
             return FlexSendMessage(
                 alt_text="直近7日 レポート",
                 contents=weekly_chart_flex(rows, days=7, target_kcal=tgt),
             )
-        if text in ("月次", "月間", "month", "Month"):
+        if text in ("今月のレポート", "今月", "月次", "月間", "month", "Month"):
             rows = fetch_recent_history(user_id, days=30)
             tgt = _resolve_target_kcal(user_id, _today())
             return FlexSendMessage(
