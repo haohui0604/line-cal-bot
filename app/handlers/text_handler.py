@@ -431,7 +431,7 @@ def handle_text(user_id: str, text: str):
 
         # 0.53) 人格設定ウィザード（回答処理）
         if user_id in _persona_pending:
-            if text in ("やめる", "キャンセル", "人格設定", "初期設定", "今日のレポート", "今週のレポート", "今月のレポート"):
+            if text in ("やめる", "キャンセル", "人格設定", "初期設定", "今日のレポート", "今週のレポート", "今月のレポート", "使い方"):
                 _persona_pending.pop(user_id)
                 return TextSendMessage(text=(
                     "人格設定を中止しました。いつでも『人格設定』でやり直せます"
@@ -490,7 +490,7 @@ def handle_text(user_id: str, text: str):
 
         if user_id in _setup_pending:
             st = _setup_pending[user_id]
-            if text in ("やめる", "キャンセル", "人格設定", "初期設定", "今日のレポート", "今週のレポート", "今月のレポート"):
+            if text in ("やめる", "キャンセル", "人格設定", "初期設定", "今日のレポート", "今週のレポート", "今月のレポート", "使い方"):
                 _setup_pending.pop(user_id)
                 return TextSendMessage(text=(
                     "初期設定を中止しました。いつでも『初期設定』で再開できます"
