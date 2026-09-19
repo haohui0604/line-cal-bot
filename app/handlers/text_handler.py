@@ -12,6 +12,7 @@ from app.services.db import (
     update_entry_kcal, find_entry_candidates,
     fetch_latest_weight, fetch_weight_series, fetch_entries_for_date,
     load_user_persona, save_user_persona,
+    fetch_recent_entries, delete_entry, delete_entries_by_date,
 )
 from app.services.calorie_calc import parse_record_line
 from app.handlers.flex_builder import (
@@ -22,13 +23,11 @@ logger = logging.getLogger(__name__)
 
 DATE_PAT = re.compile(r"(?:(\d{1,2})\s*/\s*(\d{1,2}))?")
 
-# ユーザー設定 (DB 化済み。未設定なら既定値)
 TARGET_KCAL_DEFAULT = 1800.0
 PROTEIN_TARGET_G = 100.0
 
 # ---- パターン集 ----
 GOAL_PAT = re.compile(r"^目標(?:kcal)?\s*[:：]?\s*(\d+)")
-# 体重記録: 日付指定可 + 「推定」フラグ
 # 例:「体重 72.5」「1/1 体重 72」「1/1 体重 72.5推定」
 WEIGHT_PAT = re.compile(
     r"^(?:(\d{1,2})/(\d{1,2})\s+)?体重\s+([0-9]+(?:\.[0-9]+)?)(推定)?"
@@ -36,25 +35,25 @@ WEIGHT_PAT = re.compile(
     r"(?:\s+(?:筋肉|M)\s*([0-9]+(?:\.[0-9]+)?))?"
     r"(?:\s+(?:BMR|基礎代謝)\s*([0-9]+))?"
 )
-# 消費カロリー: 日付指定可
 # 例:「運動 320」「1/1 消費 2200 活動 500 安静 1700」
 ACTIVITY_PAT = re.compile(
     r"^(?:(\d{1,2})/(\d{1,2})\s+)?(?:運動|活動|消費)\s+([0-9]+)(?:\s*kcal)?"
     r"(?:\s+(?:活動|active|ACTIVE)\s*([0-9]+))?"
     r"(?:\s+(?:安静|resting|RESTING|基礎代謝|basal)\s*([0-9]+))?"
 )
-# 過去データ修正: スロットと食品名（部分一致）
-# 例:「修正 1/1 昼 牛丼 720」「修正 1/1 牛丼 720」
+# 例:「修正 1/1 昼 牛丼 720」
 MODIFY_PAT = re.compile(
     r"^修正\s+(\d{1,2})/(\d{1,2})"
     r"(?:\s+(朝食|昼食|夕食|夜食|間食|朝|昼|夜|夕|間))?"
     r"\s+(\S+?)\s+(\d+(?:\.\d+)?)(?:\s*kcal)?\s*$",
     re.IGNORECASE,
 )
-# 修正コマンドの複数候補からの番号選択
 MODIFY_CONFIRM_PAT = re.compile(r"^修正候補\s+(\d+)\s*$")
 
-# 末尾日付+スロット指定の食事記録
+# 記録単位の削除
+DELETE_PAT      = re.compile(r"^削除\s+(\d+)\s*$")
+DELETE_DATE_PAT = re.compile(r"^削除\s+(\d{1,2})/(\d{1,2})\s*$")
+
 # 例:「牛丼 1/1 昼 720kcal」
 TRAILING_DATE_SLOT_PAT = re.compile(
     r"^(?P<food>.+?)\s+"
@@ -99,29 +98,30 @@ HELP_TEXT = (
     "・『体重 72 体脂肪18 筋肉52 BMR1500』\n"
     "・『体重』→ 直近7日の推移（未入力日は直前値で表示）\n"
     "\n"
-    "【確認】\n"
+    "【確認・整理】\n"
     "・『集計』『履歴』『週次』『月次』\n"
+    "・『削除 3』→ 履歴の番号で1件削除\n"
+    "・『削除 1/1』→ その日の食事を全削除\n"
     "・『目標 1800』→ 目標設定 /『目標』→ 確認\n"
     "\n"
     "【相談】\n"
     "・『あと何kcal食べていい？』など自由文でAI相談"
 )
 
-# 初期設定ウィザードの回答語彙
 SETUP_PURPOSES = {
     "1": "減量", "減量": "減量", "痩せたい": "減量", "やせたい": "減量",
     "2": "維持", "維持": "維持", "現状維持": "維持",
     "3": "増量", "増量": "増量", "筋肉": "増量",
 }
 
-# LLM 推定の未確定レコード (Render 再起動で消える簡易実装)
 _pending: dict = {}
 _modify_pending: dict = {}
 _bulk_pending: dict = {}
 _setup_pending: dict = {}
 _persona_pending: dict = {}
+_history_index: dict = {}   # user_id -> {番号: レコード}
+_delete_pending: dict = {}  # user_id -> 削除待ちレコード
 
-# 人格設定ウィザード（全問自由記述。「デフォルト」「なし」「スキップ」で既定値）
 _PERSONA_STEPS = [
     ("bot_name",
      "Q1. AIの名前を教えてください（自由記述・12文字以内）\n"
@@ -142,6 +142,12 @@ _PERSONA_DEFAULT_MAP = {
     "bot_tone": "",
     "bot_pronoun": "わたし",
 }
+
+_SLOT_JP = {"breakfast": "朝", "lunch": "昼", "dinner": "夜", "snack": "間食"}
+
+
+def _slot_jp(slot: str) -> str:
+    return _SLOT_JP.get(slot, slot or "?")
 
 
 def _today() -> str:
@@ -206,6 +212,23 @@ def _slot_to_english(slot: str) -> str:
     }.get(slot, slot)
 
 
+def _get_comment(user_id: str, kind: str, facts: dict) -> str:
+    """AIコメントのみ取得（失敗時は空文字）."""
+    try:
+        from app.services.llm import quick_comment
+        return quick_comment(kind, facts, load_user_persona(user_id))
+    except Exception:
+        logger.exception("comment failed")
+        return ""
+
+
+def _with_comment(user_id: str, kind: str, facts: dict,
+                  template_text: str) -> str:
+    """AIコメント ＋ 確定値の定型文（二層構造）."""
+    c = _get_comment(user_id, kind, facts)
+    return f"{c}\n\n{template_text}" if c else template_text
+
+
 def _finish_setup(user_id: str, data: dict, months):
     purpose = data["purpose"]
     weight = data["weight"]
@@ -264,6 +287,23 @@ def handle_text(user_id: str, text: str):
                 "『使い方』で全機能を確認できます"
             ))
 
+        # 0.05) 削除の確認応答
+        if user_id in _delete_pending:
+            if text in ("はい", "うん", "ok", "OK", "Yes", "YES"):
+                r = _delete_pending.pop(user_id)
+                if delete_entry(user_id=user_id, entry_id=r["id"]):
+                    label = (f"{r['date']} {_slot_jp(r['meal_slot'])} "
+                             f"{r['food_name']}")
+                    return TextSendMessage(text=_with_comment(
+                        user_id, "delete",
+                        {"削除した記録": label},
+                        f"🗑 削除しました: {label}"))
+                return TextSendMessage(text=(
+                    "⚠ 削除できませんでした（既に削除済みかもしれません）"))
+            if text in ("いいえ", "やめる", "キャンセル"):
+                _delete_pending.pop(user_id)
+                return TextSendMessage(text="削除をキャンセルしました")
+
         # 0) LLM 推定の確定/取消
         if user_id in _pending and text in (
             "はい", "うん", "記録", "ok", "OK", "Yes", "YES"
@@ -286,7 +326,7 @@ def handle_text(user_id: str, text: str):
                 and text not in ("確認", "確定", "キャンセル", "はい", "いいえ")):
             _pending.pop(user_id, None)
 
-        # 0.5) 修正コマンドの複数候補からの番号選択
+        # 0.5) 修正候補の番号選択
         if user_id in _modify_pending:
             m = MODIFY_CONFIRM_PAT.match(text)
             if m:
@@ -578,18 +618,67 @@ def handle_text(user_id: str, text: str):
         if text in ("使い方", "使い方案内", "ヘルプ", "help", "Help", "HELP"):
             return TextSendMessage(text=HELP_TEXT)
 
-        # 2) 集計
+        # 2) 集計（AIコメントを別メッセージで先行）
         if text in ("集計", "今日", "summary", "Summary"):
             s = fetch_day_summary(user_id, _today())
-            return FlexSendMessage(
+            flex = FlexSendMessage(
                 alt_text=f"{_today()} 集計",
                 contents=summary_flex(s),
             )
+            c = _get_comment(user_id, "summary", {
+                "摂取(kcal)": f"{s['intake_kcal']:.0f}",
+                "消費(kcal)": f"{s['burn_kcal']:.0f}",
+                "収支(kcal)": f"{s['deficit_kcal']:+.0f}",
+                "目標(kcal)": f"{_resolve_target_kcal(user_id, _today()):.0f}",
+            })
+            return [TextSendMessage(text=c), flex] if c else flex
 
-        # 3) 履歴 (テキスト形式)
+        # 3) 履歴 — 記録単位で一覧（番号付き／そのまま削除できる）
         if text in ("履歴", "history", "History", "りれき"):
-            rows = fetch_recent_history(user_id, days=7)
-            return TextSendMessage(text=_format_history(rows))
+            rows = fetch_recent_entries(user_id, limit=20)
+            if not rows:
+                return TextSendMessage(text=(
+                    "まだ記録がありません。\n"
+                    "『朝 食パン100g 250kcal』や写真で記録できます"))
+            _history_index[user_id] = {i: r for i, r in enumerate(rows, 1)}
+            lines = ["📋 最近の記録（新しい順）"]
+            for i, r in enumerate(rows, 1):
+                lines.append(
+                    f"{i}. {r['date'][5:]} {_slot_jp(r['meal_slot'])} "
+                    f"{r['food_name']} {r['kcal']:.0f}kcal"
+                )
+            lines += ["", "削除: 『削除 3』（番号指定）",
+                      "その日ごと削除: 『削除 1/1』"]
+            return TextSendMessage(text="\n".join(lines))
+
+        # 3.2) 番号指定で削除（確認フロー）
+        m = DELETE_PAT.match(text)
+        if m:
+            n = int(m.group(1))
+            r = _history_index.get(user_id, {}).get(n)
+            if r is None:
+                return TextSendMessage(text=(
+                    "番号を特定できませんでした。先に『履歴』を送り、"
+                    "表示された番号で『削除 3』と指定してください"))
+            _delete_pending[user_id] = r
+            return TextSendMessage(text=(
+                "次の記録を削除しますか？\n"
+                f"・{r['date']} {_slot_jp(r['meal_slot'])} "
+                f"{r['food_name']} {r['kcal']:.0f}kcal\n"
+                "→「はい」/「いいえ」"
+            ))
+
+        # 3.3) 日付ごとの一括削除
+        m = DELETE_DATE_PAT.match(text)
+        if m:
+            d = _norm_date((m.group(1), m.group(2)))
+            cnt = delete_entries_by_date(user_id=user_id, date=d)
+            if cnt:
+                return TextSendMessage(text=_with_comment(
+                    user_id, "delete",
+                    {"削除した日付": d, "削除件数": cnt},
+                    f"🗑 {d} の記録 {cnt}件を削除しました"))
+            return TextSendMessage(text=f"{d} に記録はありませんでした")
 
         # 3.5) 体重推移
         if text in ("体重", "体重履歴", "体重推移"):
@@ -643,7 +732,7 @@ def handle_text(user_id: str, text: str):
             tgt = _resolve_target_kcal(user_id, _today())
             return TextSendMessage(text=(
                 f"今の目標摂取カロリーは {tgt:.0f}kcal です\n"
-                "変更: 『目標 数値』のように送ってください\n"
+                "変更: 『目標 1800』のように送ってください\n"
                 "自動計算: 『初期設定』から目的と体重を入力"
             ))
 
@@ -674,7 +763,12 @@ def handle_text(user_id: str, text: str):
             base = f"⚖️ 体重記録: {rec_date} {weight_kg}kg（{tag}）"
             if extra:
                 base += " (" + " / ".join(extra) + ")"
-            return TextSendMessage(text=base + "\n『体重』で推移を確認できます")
+            base += "\n『体重』で推移を確認できます"
+            return TextSendMessage(text=_with_comment(
+                user_id, "weight",
+                {"日付": rec_date, "体重(kg)": weight_kg,
+                 "種別": tag, "体脂肪(%)": body_fat, "筋肉(kg)": muscle},
+                base))
 
         # 7) 活動(消費)カロリー
         m = ACTIVITY_PAT.match(text)
@@ -693,11 +787,17 @@ def handle_text(user_id: str, text: str):
             extra = ""
             if active or resting:
                 extra = f" (活動 {active or 0:.0f} / 安静 {resting or 0:.0f})"
-            return TextSendMessage(text=(
+            template = (
                 f"🏃 活動記録: {rec_date} {total:.0f}kcal{extra}\n"
                 f"消費 {s['burn_kcal']:.0f}kcal / 摂取 {s['intake_kcal']:.0f}kcal\n"
-                f"赤字 {s['deficit_kcal']:+.0f}kcal"
-            ))
+                f"収支 {s['deficit_kcal']:+.0f}kcal"
+            )
+            return TextSendMessage(text=_with_comment(
+                user_id, "activity",
+                {"日付": rec_date, "消費(kcal)": f"{total:.0f}",
+                 "摂取(kcal)": f"{s['intake_kcal']:.0f}",
+                 "収支(kcal)": f"{s['deficit_kcal']:+.0f}"},
+                template))
 
         # 8) 過去データ修正
         m = MODIFY_PAT.match(text)
@@ -794,7 +894,13 @@ def handle_text(user_id: str, text: str):
                 salt_g=parsed.get("salt_g"), quantity_g=parsed.get("quantity_g"),
                 source_type="user_report", confidence="estimated",
             )
-            return TextSendMessage(text=_format_record(d, parsed))
+            tpl = _format_record(d, parsed)
+            return TextSendMessage(text=_with_comment(
+                user_id, "record",
+                {"日付": d, "食品": parsed["food_name"],
+                 "kcal": f"{kcal:.0f}",
+                 "タンパク質(g)": parsed.get("protein_g")},
+                tpl))
 
         return _handle_llm(user_id, text)
 
@@ -833,8 +939,8 @@ def _handle_llm(user_id: str, text: str):
 
     try:
         result = chat(text, context, persona=load_user_persona(user_id))
-    except Exception:
-        logger.exception("LLM call failed")
+    except Exception as e:
+        logger.exception("LLM call failed: %s", e)
         return TextSendMessage(text=(
             "AI応答に失敗しました。少し待って再送するか、\n"
             "『朝 食パン100g 250kcal』形式で直接記録してください。\n"
@@ -898,15 +1004,3 @@ def _format_record(d, p):
         f"F{p.get('fat_g','?')} C{p.get('carb_g','?')} 食塩{p.get('salt_g','?')}g"
         f"\n   source=user_report / confidence=estimated"
     )
-
-
-def _format_history(rows):
-    if not rows:
-        return "履歴がありません"
-    lines = ["📊 直近7日"]
-    for r in rows[:7]:
-        lines.append(
-            f"{r['date']}: 摂取 {r['intake_kcal']:.0f}kcal "
-            f"赤字 {r['deficit_kcal']:+.0f}kcal"
-        )
-    return "\n".join(lines)
