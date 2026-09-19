@@ -183,9 +183,28 @@ _SLOT_JP = {"breakfast": "朝", "lunch": "昼", "dinner": "夜", "snack": "間�
 def _slot_jp(slot: str) -> str:
     return _SLOT_JP.get(slot, slot or "?")
 
+from datetime import date, timedelta
 
-def _today() -> str:
-    return date.today().isoformat()
+def _parse_daily_date(m):
+    today = date.today()
+
+    if m.group(3):
+        return today - timedelta(days=1)
+
+    if m.group(1) and m.group(2):
+        y = today.year
+        d = date(y, int(m.group(1)), int(m.group(2)))
+
+        if d > today:
+            d = date(
+                y - 1,
+                int(m.group(1)),
+                int(m.group(2))
+            )
+
+        return d
+
+    return today
 
 
 def _norm_date(m):
