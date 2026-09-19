@@ -227,30 +227,36 @@ def quick_comment(kind: str, facts: dict, persona: dict | None = None) -> str:
             "事実:\n" + "\n".join(fact_lines)
         )
         payload = {
-            # 変更点: JSON強制プロンプトではなく人格ブリーフを使う
             "system_instruction": {"parts": [{"text": _persona_brief(persona)}]},
             "contents": [{"parts": [{"text": user_msg}]}],
             "generationConfig": {
                 "temperature": 0.7,
-                "maxOutputTokens": 120,
+                # 思考機能付きモデルは思考トークンで予算を使い切り空応答
+                # になるため、上限を確保した上で思考はOFFにする
+                "maxOutputTokens": 1024,
+                "thinkingConfig": {"thinkingBudget": 0},
             },
         }
         body = _post_with_fallback(payload, timeout=8.0)
-        txt = body["candidates"][0]["content"]["parts"][0]["text"]
+        # 空応答（finishReason: MAX_TOKENS 等）でも例外にしない
+        parts = body["candidates"][0].get("content", {}).get("parts") or []
+        txt = parts[0].get("text", "") if parts else ""
 
         # 保険: 万が一JSONで返ってきたら reaction/answer を取り出す
         stripped = txt.strip()
         if stripped.startswith("{"):
             try:
                 data = parse_llm_json(stripped)
-                parts = [x for x in (data.get("reaction", ""),
-                                     data.get("answer", "")) if x]
-                if parts:
-                    stripped = " ".join(parts)
+                parts_text = [x for x in (data.get("reaction", ""),
+                                          data.get("answer", "")) if x]
+                stripped = " ".join(parts_text) if parts_text else ""
             except Exception:
                 stripped = ""
 
-        return re.sub(r"\s+", " ", stripped).strip()[:120]
+        result = re.sub(r"\s+", " ", stripped).strip()[:120]
+        if len(result) < 5:      # 短すぎる応答は採用しない
+            return ""
+        return result
     except Exception:
         logger.warning("quick_comment failed", exc_info=True)
         return ""
