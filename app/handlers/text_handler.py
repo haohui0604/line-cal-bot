@@ -997,10 +997,16 @@ def _handle_llm(user_id: str, text: str):
     return TextSendMessage(text="\n".join(parts))
 
 
+def _n(v, unit=""):
+    return f"{v:.0f}{unit}" if isinstance(v, (int, float)) else "-"
+
+
 def _format_record(d, p):
     return (
         f"✅ 記録: {d} {p['meal_slot']} {p['food_name']}\n"
-        f"   {p['kcal']:.0f}kcal / P{p.get('protein_g','?')} "
-        f"F{p.get('fat_g','?')} C{p.get('carb_g','?')} 食塩{p.get('salt_g','?')}g"
+        f"   {p['kcal']:.0f}kcal / P{_n(p.get('protein_g'))} "
+        f"F{_n(p.get('fat_g'))} C{_n(p.get('carb_g'))} "
+        f"食塩{_n(p.get('salt_g'), 'g')}"
         f"\n   source=user_report / confidence=estimated"
     )
+
