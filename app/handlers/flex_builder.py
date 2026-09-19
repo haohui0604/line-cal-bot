@@ -304,3 +304,73 @@ def _row(label: str, value: str, color: str = "#333333"):
              "color": color, "size": "sm", "weight": "bold"},
         ],
     }
+
+# ==================== 今日のレポート＋AIコメント ====================
+
+SLOT_LABELS = {"breakfast": "朝食", "lunch": "昼食",
+               "dinner": "夕食", "snack": "間食"}
+
+
+def _ai_comment_box(result):
+    """AIコメント（見出し＋本文＋アドバイス）をFlexブロックに整形。"""
+    if not result:
+        return None
+    return {
+        "type": "box", "layout": "vertical", "margin": "lg", "spacing": "sm",
+        "backgroundColor": "#F7F7F9", "cornerRadius": "8px", "paddingAll": "12px",
+        "contents": [
+            {"type": "text", "text": result["headline"], "weight": "bold",
+             "size": "sm", "color": "#333333", "wrap": True},
+            {"type": "text", "text": result["comment"], "size": "sm",
+             "color": "#555555", "wrap": True, "margin": "sm"},
+            {"type": "text", "text": "👉 " + result["advice"], "size": "xs",
+             "color": "#8A6D3B", "wrap": True, "margin": "sm"},
+        ],
+    }
+
+
+def _slot_row(label, kcal, scale):
+    """スロット名＋kcal＋細棒の1行。既存の BAR_MAX_PX / COLOR_INTAKE を前提。"""
+    w = min(max(int(kcal / scale * BAR_MAX_PX), 0), BAR_MAX_PX) if scale else 0
+    bar = [{"type": "box", "layout": "vertical", "width": f"{w}px",
+            "height": "6px", "backgroundColor": COLOR_INTAKE,
+            "cornerRadius": "3px", "contents": []}] if w else []
+    return {"type": "box", "layout": "vertical", "margin": "sm", "contents": [
+        {"type": "box", "layout": "baseline", "contents": [
+            {"type": "text", "text": label, "size": "xs", "color": "#333333", "flex": 0},
+            {"type": "text", "text": f"{kcal:,.0f} kcal", "size": "xxs",
+             "color": "#8a8a8a", "align": "end"}]},
+        {"type": "box", "layout": "vertical", "height": "6px",
+         "backgroundColor": "#eeeeee", "cornerRadius": "3px", "contents": bar},
+    ]}
+
+
+def daily_flex(date_label, summary, meals, burn, target, comment):
+    """今日のレポート。目標 → 朝食/昼食/夕食/間食 → 合計と消費の重ね棒 → 収支 → AIコメント。"""
+    total = summary["kcal"]
+    slot_kcals = [meals.get(k, {}).get("kcal", 0) for k in SLOT_LABELS]
+    peak = max([total, burn or 0, target or 0, *slot_kcals, 1])
+    scale = peak * 1.15   # 15%の余白（カンスト防止）
+
+    body = [
+        {"type": "text", "text": f"今日のレポート（{date_label}）",
+         "weight": "bold", "size": "md"},
+    ]
+    if target:
+        body.append(_target_row(target, scale))   # 既存の目標行ヘルパー
+    for key, label in SLOT_LABELS.items():
+        body.append(_slot_row(label, meals.get(key, {}).get("kcal", 0), scale))
+    body.append({"type": "separator", "margin": "md"})
+    body.append({"type": "text", "text": f"合計 {total:,.0f} kcal",
+                 "size": "xxs", "color": "#555555", "margin": "sm"})
+    body.append({"type": "text", "text": f"消費 {burn:,.0f} kcal",
+                 "size": "xxs", "color": "#555555"})
+    body.append(_overlap_bar(total, burn, scale))   # 既存の重ね棒
+    body.append(_legend())                          # 既存の凡例
+    body.append(_deficit_text(burn - total, per_day=False, days=1))
+    box = _ai_comment_box(comment)
+    if box:
+        body.append(box)
+
+    return {"type": "bubble", "body": {"type": "box", "layout": "vertical",
+            "spacing": "sm", "contents": body}}
