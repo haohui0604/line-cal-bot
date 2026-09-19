@@ -1,7 +1,11 @@
 """テキスト入力 → commands / records / summary / LLM chat 振り分け."""
 import logging
 import re
-
+from datetime import timedelta
+from app.handlers.flex_builder import daily_flex
+from app.handlers.button_builder import qr, pb
+from app.services.report_ai import build_daily_facts, generate_daily
+from app.services.db import fetch_day_meals, fetch_day_activity_total
 from datetime import date
 
 from linebot.models import TextSendMessage, FlexSendMessage
