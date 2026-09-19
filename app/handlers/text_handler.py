@@ -656,7 +656,7 @@ def handle_text(user_id: str, text: str):
         m = DAILY_PAT.match(text)
         if m:
             d = _parse_daily_date(m)
-            label = d.strftime("%Y-%m-%d")
+            label = d if isinstance(d, str) else d.strftime("%Y-%m-%d")
             s = fetch_day_summary(user_id, label)
             meals = fetch_day_meals(user_id, label)
             burn = fetch_day_activity_total(user_id, label)
