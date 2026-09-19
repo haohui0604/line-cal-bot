@@ -6,6 +6,7 @@ COLOR_BURN = "#6FA8DC"     # 消費 = 青
 COLOR_TARGET = "#9CCC65"   # 目標 = 緑
 COLOR_LANE = "#F0F0F0"     # 背景レーン
 BAR_MAX_PX = 200
+HEADROOM = 1.15            # 最大値に15%の余白 → 棒がレーン端に張り付かない
 
 
 def summary_flex(s: Dict[str, Any]):
@@ -29,9 +30,9 @@ def summary_flex(s: Dict[str, Any]):
             "layout": "vertical",
             "spacing": "md",
             "contents": [
-                _row("摂取", f"{intake:.0f} kcal"),
-                _row("消費", f"{burn:.0f} kcal"),
-                _row("収支(消費−摂取)", f"{deficit:+.0f} kcal",
+                _row("摂取", f"{intake:,.0f} kcal"),
+                _row("消費", f"{burn:,.0f} kcal"),
+                _row("収支(消費−摂取)", f"{deficit:+,.0f} kcal",
                      color="#27AE60" if deficit >= 0 else "#E74C3C"),
                 _row("タンパク質", f"{s.get('protein_g', 0):.0f} g"),
                 _row("脂質", f"{s.get('fat_g', 0):.0f} g"),
@@ -62,9 +63,9 @@ def history_flex(rows: List[Dict[str, Any]]):
                 "layout": "vertical",
                 "contents": [
                     {"type": "text", "text": r["date"], "weight": "bold"},
-                    _row("摂取", f"{r['intake_kcal']:.0f} kcal"),
-                    _row("消費", f"{r['consumed_kcal']:.0f} kcal"),
-                    _row("収支", f"{r['deficit_kcal']:+.0f} kcal"),
+                    _row("摂取", f"{r['intake_kcal']:,.0f} kcal"),
+                    _row("消費", f"{r['consumed_kcal']:,.0f} kcal"),
+                    _row("収支", f"{r['deficit_kcal']:+,.0f} kcal"),
                 ],
             },
         })
@@ -73,24 +74,23 @@ def history_flex(rows: List[Dict[str, Any]]):
 
 # ---- 重ね棒 (摂取・消費を1レーンに、少ない方を手前に) ----
 
-def _overlap_bar(intake: float, burn: float):
+def _overlap_bar(intake: float, burn: float, scale: float):
     """摂取(橙)と消費(青)を1本のレーンに重ねる.
 
-    全長 = 大きい方の値。手前 = 少ない方。残差は大きい方の色で続く。
-    LINE Flex は絶対座標が使えないため、横並びboxの連結で表現する。
+    scale: この期間の共通スケール (最大値×HEADROOM)。
+           全バブルで同じ scale を使うので日別の大小が比較できる。
+    全長 = max(摂取,消費) / scale。手前 = 少ない方。残差は多い方の色で続く。
     """
-    bigger = max(intake, burn, 1)
-    w_in = max(int(intake / bigger * BAR_MAX_PX), 2)
-    w_burn = max(int(burn / bigger * BAR_MAX_PX), 2)
+    scale = max(scale, 1)
+    w_in = min(max(int(intake / scale * BAR_MAX_PX), 2), BAR_MAX_PX)
+    w_burn = min(max(int(burn / scale * BAR_MAX_PX), 2), BAR_MAX_PX)
 
     if intake <= burn:
-        # 手前: 摂取(全量) / 奥: 消費の残り
         seg = [
             {"w": w_in, "color": COLOR_INTAKE},
             {"w": max(w_burn - w_in, 0), "color": COLOR_BURN},
         ]
     else:
-        # 手前: 消費(全量) / 奥: 摂取の残り
         seg = [
             {"w": w_burn, "color": COLOR_BURN},
             {"w": max(w_in - w_burn, 0), "color": COLOR_INTAKE},
@@ -116,21 +116,21 @@ def _legend():
              "color": COLOR_INTAKE, "weight": "bold"},
             {"type": "text", "text": "■ 消費", "size": "xxs",
              "color": COLOR_BURN, "weight": "bold"},
-            {"type": "text", "text": "(全長=多い方 / 手前=少ない方)",
+            {"type": "text", "text": "（手前=少ない方）",
              "size": "xxs", "color": "#999999"},
         ],
     }
 
 
-def _target_row(target_kcal: float, max_kcal: float):
+def _target_row(target_kcal: float, scale: float):
     """目標を棒＋数値で1行表示."""
-    w = max(int(target_kcal / max(max_kcal, 1) * BAR_MAX_PX), 3)
+    w = min(max(int(target_kcal / max(scale, 1) * BAR_MAX_PX), 3), BAR_MAX_PX)
     return {
         "type": "box", "layout": "vertical", "spacing": "xs",
         "margin": "sm",
         "contents": [
             {"type": "text",
-             "text": f"目標 {target_kcal:.0f} kcal",
+             "text": f"目標 {target_kcal:,.0f} kcal",
              "size": "xxs", "color": "#555555"},
             {"type": "box", "layout": "vertical",
              "width": f"{BAR_MAX_PX}px", "height": "12px",
@@ -149,31 +149,34 @@ def _deficit_text(deficit: float, per_day: bool = False,
                   days: int = 0):
     if per_day and days:
         avg = deficit / days
-        txt = f"収支 {deficit:+.0f} kcal（1日平均 {avg:+.0f}）"
+        txt = f"収支 {deficit:+,.0f} kcal（1日平均 {avg:+,.0f}）"
     else:
-        txt = f"収支 {deficit:+.0f} kcal"
+        txt = f"収支 {deficit:+,.0f} kcal"
     return {"type": "text", "text": txt, "size": "sm",
             "weight": "bold", "margin": "md",
             "color": "#27AE60" if deficit >= 0 else "#E74C3C"}
 
 
 def _period_bubble(title: str, intake: float, burn: float,
-                   target_kcal: Optional[float],
+                   target_kcal: Optional[float], scale: float,
                    days: int = 0, is_total: bool = False):
     """目標 → 摂取/消費(重ね棒) → 収支 の語順で1バブル."""
-    max_kcal = max(intake, burn, target_kcal or 0, 1)
     deficit = burn - intake
     contents = [
         {"type": "text", "text": title, "weight": "bold",
          "size": "sm" if not is_total else "md"},
     ]
     if target_kcal:
-        contents.append(_target_row(target_kcal, max_kcal))
+        contents.append(_target_row(target_kcal, scale))
+    # 摂取/消費は2行に分割 (micro バブルでの文字切れ防止)
     contents.append({"type": "text",
-                     "text": f"摂取 {intake:.0f} / 消費 {burn:.0f} kcal",
+                     "text": f"摂取 {intake:,.0f} kcal",
                      "size": "xxs", "color": "#555555",
                      "margin": "sm"})
-    contents.append(_overlap_bar(intake, burn))
+    contents.append({"type": "text",
+                     "text": f"消費 {burn:,.0f} kcal",
+                     "size": "xxs", "color": "#555555"})
+    contents.append(_overlap_bar(intake, burn, scale))
     contents.append(_legend())
     contents.append(_deficit_text(deficit, per_day=is_total, days=days))
     return {
@@ -188,8 +191,8 @@ def weekly_chart_flex(rows: List[Dict[str, Any]], days: int = 7,
                       title: Optional[str] = None):
     """直近 N 日のレポート.
 
-    1枚目 = 期間トータル (目標→摂取/消費 重ね棒→収支/1日平均)
-    2枚目以降 = 日別 (同じ形、古い順)
+    1枚目 = 期間トータル (トータル目標基準スケール)
+    2枚目以降 = 日別 (全日共通スケール → 日ごとの大小が比較できる)
     """
     if not rows:
         return {
@@ -202,19 +205,28 @@ def weekly_chart_flex(rows: List[Dict[str, Any]], days: int = 7,
         }
     rows = rows[:days][::-1]  # 古い順
 
+    # 日別バブル共通スケール (余白込み) → カンスト回避 + 日間比較が可能
+    day_scale = max(
+        [max(r["intake_kcal"], r["consumed_kcal"], target_kcal or 0)
+         for r in rows] + [1]
+    ) * HEADROOM
+
     total_in = sum(r["intake_kcal"] for r in rows)
     total_burn = sum(r["consumed_kcal"] for r in rows)
     total_target = (target_kcal or 0) * len(rows)
+    total_scale = max(total_in, total_burn, total_target, 1) * HEADROOM
 
     bubbles = [_period_bubble(
         f"📊 直近{len(rows)}日トータル",
         total_in, total_burn,
         total_target if target_kcal else None,
+        total_scale,
         days=len(rows), is_total=True,
     )]
     for r in rows:
         bubbles.append(_period_bubble(
-            r["date"], r["intake_kcal"], r["consumed_kcal"], target_kcal,
+            r["date"], r["intake_kcal"], r["consumed_kcal"],
+            target_kcal, day_scale,
         ))
     return {"type": "carousel", "contents": bubbles}
 
@@ -231,9 +243,9 @@ def monthly_summary_flex(rows: List[Dict[str, Any]],
         }
     total_intake = sum(r["intake_kcal"] for r in rows)
     total_burn = sum(r["consumed_kcal"] for r in rows)
-    total_deficit = total_burn - total_intake
-    avg_intake = total_intake / len(rows)
     total_target = (target_kcal or 0) * len(rows)
+    total_scale = max(total_intake, total_burn, total_target, 1) * HEADROOM
+    avg_intake = total_intake / len(rows)
     days_over = sum(
         1 for r in rows
         if target_kcal and r["intake_kcal"] > target_kcal
@@ -246,13 +258,13 @@ def monthly_summary_flex(rows: List[Dict[str, Any]],
         f"📅 直近{len(rows)}日トータル",
         total_intake, total_burn,
         total_target if target_kcal else None,
+        total_scale,
         days=len(rows), is_total=True,
     )
-    # 補足の数値行を body 末尾に追加
     bubble["body"]["contents"] += [
         {"type": "separator", "margin": "md"},
         _row("記録日数", f"{len(rows)} 日"),
-        _row("1日平均摂取", f"{avg_intake:.0f} kcal"),
+        _row("1日平均摂取", f"{avg_intake:,.0f} kcal"),
         _row("目標達成率(目標以下の日)", f"{achieve_rate:.0f} %",
              color="#27AE60" if achieve_rate >= 80 else "#E67E22"),
     ]
@@ -266,7 +278,7 @@ def _bar_row(label: str, value: float, bar_width: int, color: str):
         "margin": "sm",
         "contents": [
             {"type": "text",
-             "text": f"{label} {value:.0f} kcal",
+             "text": f"{label} {value:,.0f} kcal",
              "size": "xxs", "color": "#555555"},
             {"type": "box", "layout": "vertical",
              "width": f"{BAR_MAX_PX}px", "height": "12px",
