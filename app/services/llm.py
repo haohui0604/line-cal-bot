@@ -199,6 +199,20 @@ COMMENT_STYLES = {
     "summary":  "集計を見せた直後。数字の意味づけを一言だけ。",
 }
 
+def _persona_brief(persona: dict | None) -> str:
+    """コメント生成専用の軽量 system instruction.
+
+    食事解析用プロンプトはJSON出力を強制するため、
+    コメント生成では使わず人格情報だけを渡す。
+    """
+    p = {**PERSONA_DEFAULT, **(persona or {})}
+    tone = p["bot_tone"] or "明るく前向き。敬体と砕けた口調の中間で話す。"
+    return (
+        f"あなたはLINEのカロリー管理パートナー「{str(p['bot_name'])[:12]}」。"
+        f"一人称は「{str(p['bot_pronoun'])[:6]}」で統一。"
+        f"性格・口調: {str(tone)[:100]}。"
+        "返答はプレーンテキストのみ。JSON・コードフェンス・箇条書き記号は禁止。"
+    )
 
 def quick_comment(kind: str, facts: dict, persona: dict | None = None) -> str:
     """定型文の前に添える短いコメント（80字以内）。失敗時は空文字."""
@@ -213,7 +227,8 @@ def quick_comment(kind: str, facts: dict, persona: dict | None = None) -> str:
             "事実:\n" + "\n".join(fact_lines)
         )
         payload = {
-            "system_instruction": {"parts": [{"text": build_system_prompt(persona)}]},
+            # 変更点: JSON強制プロンプトではなく人格ブリーフを使う
+            "system_instruction": {"parts": [{"text": _persona_brief(persona)}]},
             "contents": [{"parts": [{"text": user_msg}]}],
             "generationConfig": {
                 "temperature": 0.7,
@@ -222,10 +237,24 @@ def quick_comment(kind: str, facts: dict, persona: dict | None = None) -> str:
         }
         body = _post_with_fallback(payload, timeout=8.0)
         txt = body["candidates"][0]["content"]["parts"][0]["text"]
-        return re.sub(r"\s+", " ", txt).strip()[:120]
+
+        # 保険: 万が一JSONで返ってきたら reaction/answer を取り出す
+        stripped = txt.strip()
+        if stripped.startswith("{"):
+            try:
+                data = parse_llm_json(stripped)
+                parts = [x for x in (data.get("reaction", ""),
+                                     data.get("answer", "")) if x]
+                if parts:
+                    stripped = " ".join(parts)
+            except Exception:
+                stripped = ""
+
+        return re.sub(r"\s+", " ", stripped).strip()[:120]
     except Exception:
         logger.warning("quick_comment failed", exc_info=True)
         return ""
+
 
 
 def estimate_foods_batch(items: list) -> list:
