@@ -465,13 +465,15 @@ def fetch_day_meals(user_id: str, date: str) -> dict:
 
 
 def fetch_day_activity_total(user_id: str, date: str) -> float:
-    """指定日の消費カロリー合計（同名関数が既にあればそちらを使う・これは不要）。"""
+    """指定日の消費カロリー"""
     with get_conn() as c:
         r = c.execute(
-            "SELECT COALESCE(SUM(kcal),0) AS t FROM activity"
-            " WHERE user_id=? AND date=?", (user_id, date),
+            "SELECT COALESCE(total_kcal,0) AS t FROM activity "
+            "WHERE user_id=? AND date=?",
+            (user_id, date),
         ).fetchone()
-    return r["t"]
+
+    return r["t"] if r else 0
 
 
 # ============== AIコメントのキャッシュ ==============
