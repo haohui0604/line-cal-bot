@@ -442,4 +442,83 @@ def delete_entries_by_date(user_id: str, date: str) -> int:
             (user_id, date),
         )
         return cur.rowcount
+# ===================== レポート用 =====================
 
+def fetch_day_meals(user_id: str, date: str) -> dict:
+    """指定日の食事をスロット別に返す（今日のレポートの内訳用）。
+    例: {"breakfast": {"food_name": "食パン", "kcal": 250}, ...}"""
+    with get_conn() as c:
+        rows = c.execute(
+            "SELECT meal_slot, food_name, SUM(kcal) AS kcal FROM entries"
+            " WHERE user_id=? AND date=? GROUP BY meal_slot, food_name",
+            (user_id, date),
+        ).fetchall()
+    out = {}
+    for r in rows:
+        slot, name, kcal = r["meal_slot"], r["food_name"], r["kcal"]
+        if slot not in out:
+            out[slot] = {"food_name": name, "kcal": kcal}
+        else:
+            out[slot]["food_name"] += "・" + name
+            out[slot]["kcal"] += kcal
+    return out
+
+
+def fetch_day_activity_total(user_id: str, date: str) -> float:
+    """指定日の消費カロリー合計（同名関数が既にあればそちらを使う・これは不要）。"""
+    with get_conn() as c:
+        r = c.execute(
+            "SELECT COALESCE(SUM(kcal),0) AS t FROM activity"
+            " WHERE user_id=? AND date=?", (user_id, date),
+        ).fetchone()
+    return r["t"]
+
+
+# ============== AIコメントのキャッシュ ==============
+
+def get_report_comment(cache_key: str):
+    """キャッシュ済みの AI コメントを返す。無ければ None。"""
+    with get_conn() as conn:
+        cur = conn.execute(
+            "SELECT headline, comment, advice, source FROM report_comments WHERE cache_key = ?",
+            (cache_key,),
+        )
+        row = cur.fetchone()
+    if not row:
+        return None
+    if isinstance(row, dict):
+        return {"headline": row["headline"], "comment": row["comment"],
+                "advice": row["advice"], "source": row["source"]}
+    return {"headline": row[0], "comment": row[1], "advice": row[2], "source": row[3]}
+
+
+def save_report_comment(cache_key: str, user_id: str, scope: str, period_key: str,
+                        headline: str, comment: str, advice: str,
+                        source: str, facts_json: str) -> None:
+    """生成結果をキャッシュに保存（同一キーは上書き）。"""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO report_comments
+               (cache_key, user_id, scope, period_key, headline, comment, advice, source, facts_json, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(cache_key) DO UPDATE SET
+                 headline=excluded.headline, comment=excluded.comment, advice=excluded.advice,
+                 source=excluded.source, facts_json=excluded.facts_json, created_at=excluded.created_at""",
+            (cache_key, user_id, scope, period_key, headline, comment, advice, source, facts_json, now),
+        )
+        conn.commit()
+
+
+def purge_report_comments(user_id: str, scope: str | None = None) -> int:
+    """再生成したいとき用（プロンプト変更時に呼ぶ）。"""
+    sql = "DELETE FROM report_comments WHERE user_id = ?"
+    args = [user_id]
+    if scope:
+        sql += " AND scope = ?"
+        args.append(scope)
+    with get_conn() as conn:
+        cur = conn.execute(sql, tuple(args))
+        conn.commit()
+        return cur.rowcount
