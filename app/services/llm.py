@@ -5,6 +5,7 @@
   - 「今日あとどれくらい食べていい？」→ 残り予算アドバイス (intent=question)
   - 雑談・リアクション (intent=chat)
   - 一括登録時の kcal 未記載行のまとめ推定
+  - 定型応答に添える短いコメント生成 (quick_comment)
 
 DBには書き込まない。書き込みは呼び出し側 (text_handler) の責務。
 """
@@ -19,7 +20,6 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 # モデル名のフォールバック順 (新しい/軽量/旧世代)
-# 429/503/404 が出たときに次候補へ自動切替。
 MODEL_PRIMARY = "gemini-flash-latest"
 MODEL_FALLBACKS = [
     "gemini-flash-lite-latest",
@@ -28,7 +28,6 @@ MODEL_FALLBACKS = [
 ]
 
 # ---- 人格 (persona) ----
-# ユーザーが『人格設定』でカスタマイズ。未設定時はデフォルト。
 PERSONA_DEFAULT = {
     "bot_name": "アシスタント",
     "bot_tone": "",
@@ -40,7 +39,7 @@ SYSTEM_PROMPT_TEMPLATE = """\
 一人称は「{bot_pronoun}」で統一してください。
 性格・口調: {bot_tone}
 
-ユーザー設定の人格ルール:
+人格ルール:
 - 「名前は？」「あなたは誰？」「自己紹介して」と聞かれたら、answer で「{bot_name}」と名乗る。
 - AIであることは隠さない。医療的診断・効果の断定（『必ず痩せる』等）は禁止。
 
@@ -122,11 +121,8 @@ def _build_user_message(user_message: str, context: dict) -> str:
     return "\n".join(lines)
 
 
-def _post_with_fallback(payload: dict, timeout: float = 30.0) -> dict:
-    """MODEL_PRIMARY → FALLBACKS の順に試し、最初に成功したものを返す.
-
-    404 はそのモデル名が存在しないため次へ。429/503/タイムアウトも次へ。
-    """
+def _post_with_fallback(payload: dict, timeout: float = 8.0) -> dict:
+    """MODEL_PRIMARY → FALLBACKS の順に試し、最初に成功したものを返す."""
     api_key = settings.GEMINI_API_KEY
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY not set")
@@ -171,7 +167,7 @@ def chat(user_message: str, context: dict, persona: dict | None = None) -> dict:
             "temperature": 0.4,
         },
     }
-    body = _post_with_fallback(payload, timeout=30.0)
+    body = _post_with_fallback(payload, timeout=8.0)
     raw = body["candidates"][0]["content"]["parts"][0]["text"]
     return parse_llm_json(raw)
 
@@ -193,15 +189,47 @@ def parse_llm_json(raw: str) -> dict:
     return data
 
 
-def estimate_foods_batch(items: list) -> list:
-    """一括登録モード用: kcal未記載の行をまとめて栄養推定する.
+# ---- 定型応答に添える「ひと言コメント」 ----
 
-    items: [{"date": "2026-09-01", "meal_slot": "breakfast",
-             "food_name": "食パン", "quantity_g": 100.0 or None, "kcal": 0.0}, ...]
-    戻り値: items と同じ並び。各要素に kcal/protein_g/fat_g/
-            carb_g/salt_g が補完される。
-    1件でも推定不能が残れば例外 → 呼び出し側で per-item にフォールバック。
-    """
+COMMENT_STYLES = {
+    "record":   "食事を記録した直後。食べ物そのものに触れた短い感想。",
+    "activity": "消費カロリーを記録した直後。ねぎらい＋一言の気づき。",
+    "weight":   "体重を記録した直後。良し悪しを断定せず継続を後押し。",
+    "delete":   "記録を削除した直後。罪悪感を与えず前向きに。",
+    "summary":  "集計を見せた直後。数字の意味づけを一言だけ。",
+}
+
+
+def quick_comment(kind: str, facts: dict, persona: dict | None = None) -> str:
+    """定型文の前に添える短いコメント（80字以内）。失敗時は空文字."""
+    try:
+        style = COMMENT_STYLES.get(kind, "短い一言。")
+        fact_lines = [f"- {k}: {v}" for k, v in facts.items() if v is not None]
+        user_msg = (
+            "次の記録直後の『ひと言コメント』だけを書いてください。\n"
+            "条件: 80字以内 / 絵文字は最大1個 / 数値の再掲はしない / "
+            "断定・説教は禁止\n"
+            f"シーン: {style}\n"
+            "事実:\n" + "\n".join(fact_lines)
+        )
+        payload = {
+            "system_instruction": {"parts": [{"text": build_system_prompt(persona)}]},
+            "contents": [{"parts": [{"text": user_msg}]}],
+            "generationConfig": {
+                "temperature": 0.7,
+                "maxOutputTokens": 120,
+            },
+        }
+        body = _post_with_fallback(payload, timeout=8.0)
+        txt = body["candidates"][0]["content"]["parts"][0]["text"]
+        return re.sub(r"\s+", " ", txt).strip()[:120]
+    except Exception:
+        logger.warning("quick_comment failed", exc_info=True)
+        return ""
+
+
+def estimate_foods_batch(items: list) -> list:
+    """一括登録モード用: kcal未記載の行をまとめて栄養推定する."""
     lines = ["以下の食事記録の各行について、日本の一般的な食品成分値で"
              "栄養を推定してください。\n"]
     for i, it in enumerate(items):
@@ -223,7 +251,7 @@ def estimate_foods_batch(items: list) -> list:
             "temperature": 0.2,
         },
     }
-    body = _post_with_fallback(payload, timeout=60.0)
+    body = _post_with_fallback(payload, timeout=25.0)
     raw = body["candidates"][0]["content"]["parts"][0]["text"]
     data = parse_llm_json(raw)
     for f in data.get("foods", []):
@@ -260,7 +288,7 @@ def estimate_food_single(item: dict) -> dict:
             "temperature": 0.2,
         },
     }
-    body = _post_with_fallback(payload, timeout=30.0)
+    body = _post_with_fallback(payload, timeout=8.0)
     raw = body["candidates"][0]["content"]["parts"][0]["text"]
     data = parse_llm_json(raw)
     for k in ("kcal", "protein_g", "fat_g", "carb_g", "salt_g"):
