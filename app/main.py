@@ -5,7 +5,7 @@ from linebot.models import MessageEvent, TextMessage, ImageMessage, PostbackEven
 from linebot.models import TextSendMessage
 from app.config import settings
 from app.services.db import init_db
-from app.webhook import on_message
+from app.webhook import on_message, on_postback
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -53,17 +53,10 @@ def _on_image(event):
     on_message(event, line_bot_api)
 
 
-# リッチメニュー等のpostback（退会など）→ 落ちずにテキスト返信
+# リッチメニュー等のpostback → コマンドに変換して既存ロジックへ流す
 @handler.add(PostbackEvent)
 def _on_postback(event):
     try:
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text=(
-                "ボタン操作を受け付けました。\n"
-                "メニューの操作は文字入力でもできます：\n"
-                "・集計 ・履歴 ・週次 ・月次 ・体重 ・初期設定"
-            )),
-        )
+        on_postback(event, line_bot_api)
     except Exception:
-        logger.exception("postback reply failed")
+        logger.exception("postback handling failed")
