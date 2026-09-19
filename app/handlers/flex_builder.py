@@ -346,8 +346,7 @@ def _slot_row(label, kcal, scale):
 
 
 def daily_flex(date_label, summary, meals, burn, target, comment):
-    """今日のレポート。目標 → 朝食/昼食/夕食/間食 → 合計と消費の重ね棒 → 収支 → AIコメント。"""
-    total = summary["kcal"]
+    total = summary["intake_kcal"]
     slot_kcals = [meals.get(k, {}).get("kcal", 0) for k in SLOT_LABELS]
     peak = max([total, burn or 0, target or 0, *slot_kcals, 1])
     scale = peak * 1.15   # 15%の余白（カンスト防止）
