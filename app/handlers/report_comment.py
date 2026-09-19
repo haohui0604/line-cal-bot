@@ -142,4 +142,3 @@ def ai_fallback(scope: str, facts: dict) -> dict:
         "comment": " ".join(lines[:2]) if lines else "記録を続けよう。",
         "advice": lines[2] if len(lines) > 2 else "明日も1回だけ送ってみよう。",
     }
-Copy
