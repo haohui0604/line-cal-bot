@@ -405,3 +405,41 @@ def load_user_persona(user_id: str) -> dict:
                 "bot_pronoun": r["bot_pronoun"]}
     except (TypeError, KeyError, IndexError):
         return {"bot_name": r[0], "bot_tone": r[1], "bot_pronoun": r[2]}
+
+# ---- 記録単位の一覧・削除 ----
+
+def fetch_recent_entries(user_id: str, limit: int = 20) -> List[Dict[str, Any]]:
+    """新しい順に記録単位で返す（履歴表示・削除対象の特定用）."""
+    with get_conn() as c:
+        rows = c.execute(
+            "SELECT id, date, meal_slot, food_name, kcal, protein_g, fat_g,"
+            " carb_g, salt_g, source_type, created_at"
+            " FROM entries WHERE user_id=?"
+            " ORDER BY date DESC, CASE meal_slot"
+            "  WHEN 'breakfast' THEN 1 WHEN 'lunch' THEN 2"
+            "  WHEN 'dinner' THEN 3 ELSE 4 END, id DESC"
+            " LIMIT ?",
+            (user_id, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_entry(user_id: str, entry_id: int) -> bool:
+    """1件削除。削除できたら True."""
+    with get_conn() as c:
+        cur = c.execute(
+            "DELETE FROM entries WHERE id=? AND user_id=?",
+            (entry_id, user_id),
+        )
+        return cur.rowcount > 0
+
+
+def delete_entries_by_date(user_id: str, date: str) -> int:
+    """指定日の食事記録をまとめて削除し、削除件数を返す."""
+    with get_conn() as c:
+        cur = c.execute(
+            "DELETE FROM entries WHERE user_id=? AND date=?",
+            (user_id, date),
+        )
+        return cur.rowcount
+
