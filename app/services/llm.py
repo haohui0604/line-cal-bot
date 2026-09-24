@@ -23,8 +23,6 @@ logger = logging.getLogger(__name__)
 MODEL_PRIMARY = "gemini-flash-latest"
 MODEL_FALLBACKS = [
     "gemini-flash-lite-latest",
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
 ]
 
 # ---- 人格 (persona) ----
