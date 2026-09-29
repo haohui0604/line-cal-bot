@@ -81,3 +81,31 @@ def test_session_cookie_roundtrip():
     token = auth.issue_session("U123")
     assert auth.read_session(token) == "U123"
     assert auth.read_session("tampered-token") is None
+
+
+def test_staff_visibility_and_requests():
+    """Phase 2: スタッフ権限・会員の可視範囲・申請の権限チェック."""
+    gym_db.upsert_user("U_OWNER2", "オーナー2")
+    gym_db.upsert_user("U_OUTSIDER", "無関係")
+    gym_db.upsert_user("U_M2", "会員2")
+    gym = gym_db.create_gym(name="Sジム", owner_user_id="U_OWNER2")
+
+    # オーナーはスタッフ扱い、会員・無関係者はスタッフではない
+    assert gym_db.is_staff("U_OWNER2")
+    assert not gym_db.is_staff("U_M2")
+    assert not gym_db.is_staff("U_OUTSIDER")
+
+    # 入会申請 → スタッフの申請一覧に載る / 無関係者には見えない
+    res = gym_db.request_join(user_id="U_M2", gym_id=gym["id"])
+    pend = gym_db.list_pending_for_staff("U_OWNER2")
+    assert any(r["id"] == res["membership_id"] for r in pend)
+    assert gym_db.list_pending_for_staff("U_OUTSIDER") == []
+    assert gym_db.get_request_for_staff("U_OUTSIDER", res["membership_id"]) is None
+
+    # 承認すると担当=承認者になり、参照権限が付く
+    assert gym_db.approve_request(res["membership_id"], trainer_id="U_OWNER2")
+    assert gym_db.can_staff_view_member("U_OWNER2", "U_M2")
+    assert not gym_db.can_staff_view_member("U_OUTSIDER", "U_M2")
+    members = gym_db.list_members_for_staff("U_OWNER2")
+    assert any(m["user_id"] == "U_M2" and m["gym_name"] == "Sジム"
+               for m in members)

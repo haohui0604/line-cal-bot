@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block title %}{{ member_name }}{% endblock %}
+{% block head %}<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>{% endblock %}
+{% block content %}
+<p><a href="/trainer" class="muted">← 会員一覧に戻る</a></p>
+<h2>{{ member_name }}</h2>
+
+<div class="grid2">
+  <div class="card">
+    <div class="muted">今日の摂取カロリー（{{ today }}）</div>
+    <div class="stat">{{ "%.0f"|format(summary.get("intake_kcal") or 0) }} kcal</div>
+    <div class="muted">消費: {{ "%.0f"|format(summary.get("burn_kcal") or summary.get("burn") or 0) }} kcal</div>
+  </div>
+  <div class="card">
+    <div class="muted">今日のPFC</div>
+    <div class="stat" style="font-size:16px">
+      P {{ "%.0f"|format(summary.get("protein_g") or 0) }}g /
+      F {{ "%.0f"|format(summary.get("fat_g") or 0) }}g /
+      C {{ "%.0f"|format(summary.get("carb_g") or 0) }}g
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <b>📈 カロリー推移（14日）</b>
+  <canvas id="calChart" height="110"></canvas>
+</div>
+<div class="card">
+  <b>⚖️ 体重推移（14日）</b>
+  <canvas id="weightChart" height="90"></canvas>
+</div>
+
+<div class="card">
+  <b>💬 コメントを送る</b>
+  <form method="post" action="/trainer/members/{{ member_id }}/comments">
+    <textarea name="body" required
+      placeholder="例: 夕食のバランス◎。タンパク質をあと一品足すと完璧です"></textarea>
+    <label class="muted" style="display:block;margin:8px 0">
+      <input type="checkbox" name="is_directive">
+      ⭐ AIコーチの今後の指導に反映する（指導方針として記録）
+    </label>
+    <button class="btn" type="submit">送信（会員のLINEに通知）</button>
+  </form>
+</div>
+
+<div class="card">
+  <b>🕘 コメント履歴</b>
+  {% if not comments %}<p class="muted">まだコメントはありません。</p>{% endif %}
+  {% for cm in comments %}
+  <div style="border-bottom:1px solid var(--line);padding:10px 0">
+    {% if cm.author_type == "trainer" %}
+      <span class="badge">トレーナー</span>
+    {% else %}
+      <span class="badge badge-green">AIコーチ</span>
+    {% endif %}
+    {% if cm.is_directive %}<span class="badge badge-green">⭐方針</span>{% endif %}
+    <span class="muted">{{ cm.created_at }}</span>
+    <div style="margin-top:4px;white-space:pre-wrap">{{ cm.body }}</div>
+  </div>
+  {% endfor %}
+</div>
+
+<div class="card">
+  <b>🍽 最近の記録</b>
+  {% if not entries %}<p class="muted">記録はまだありません。</p>{% endif %}
+  <table>
+    <tr><th>日付</th><th>区分</th><th>内容</th><th>kcal</th></tr>
+    {% for e in entries %}
+    <tr>
+      <td class="muted">{{ e.date }}</td>
+      <td>{{ e.meal_slot }}</td>
+      <td>{{ e.food_name }}</td>
+      <td>{{ "%.0f"|format(e.kcal or 0) }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+
+<script>
+(async () => {
+  const res = await fetch("/api/trainer/members/{{ member_id }}/summary?days=14");
+  if (!res.ok) return;
+  const d = await res.json();
+  new Chart(document.getElementById("calChart"), {
+    data: { labels: d.labels, datasets: [
+      { type: "bar", label: "摂取 kcal", data: d.intake,
+        backgroundColor: "#06c75555", borderColor: "#06c755", borderWidth: 1 },
+      { type: "line", label: "消費 kcal", data: d.burn,
+        borderColor: "#f59e0b", tension: .3, pointRadius: 2 }
+    ]},
+    options: { responsive: true, interaction: { mode: "index" } }
+  });
+  new Chart(document.getElementById("weightChart"), {
+    type: "line",
+    data: { labels: d.weight_labels, datasets: [
+      { label: "体重 kg", data: d.weight,
+        borderColor: "#3b82f6", tension: .3, pointRadius: 2, spanGaps: true }
+    ]},
+    options: { responsive: true }
+  });
+})();
+</script>
+{% endblock %}

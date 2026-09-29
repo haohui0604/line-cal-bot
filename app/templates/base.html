@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}line-cal-bot 管理{% endblock %}</title>
+<style>
+  :root{ --bg:#f6f7f9; --card:#fff; --line:#e5e7eb; --text:#1f2937;
+         --muted:#6b7280; --accent:#06c755; --accent-d:#05a648; }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font-family:-apple-system,"Hiragino Kaku Gothic ProN",Meiryo,sans-serif}
+  header{background:var(--card);border-bottom:1px solid var(--line);
+         padding:12px 20px;display:flex;gap:18px;align-items:center;flex-wrap:wrap}
+  header b{font-size:16px}
+  header a{color:var(--muted);text-decoration:none;font-size:14px}
+  header a:hover{color:var(--text)}
+  main{max-width:960px;margin:24px auto;padding:0 16px}
+  h2{font-size:20px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;
+        padding:16px;margin-bottom:16px}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{padding:10px 8px;border-bottom:1px solid var(--line);text-align:left}
+  th{color:var(--muted);font-weight:600}
+  .btn{display:inline-block;background:var(--accent);color:#fff;border:none;
+       border-radius:8px;padding:8px 16px;font-size:14px;cursor:pointer}
+  .btn:hover{background:var(--accent-d)}
+  .btn-ghost{background:#fff;color:var(--text);border:1px solid var(--line)}
+  textarea{width:100%;min-height:90px;border:1px solid var(--line);
+           border-radius:8px;padding:10px;font-size:14px;font-family:inherit}
+  .muted{color:var(--muted);font-size:13px}
+  .badge{display:inline-block;background:#fef3c7;color:#92400e;
+         border-radius:999px;padding:2px 10px;font-size:12px}
+  .badge-green{background:#dcfce7;color:#166534}
+  .avatar{width:36px;height:36px;border-radius:50%;object-fit:cover;vertical-align:middle}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media (max-width:720px){.grid2{grid-template-columns:1fr}}
+  .stat{font-size:22px;font-weight:700}
+  form.inline{display:inline}
+</style>
+{% block head %}{% endblock %}
+</head>
+<body>
+<header>
+  <b>🏋️ line-cal-bot 管理</b>
+  <a href="/trainer">担当会員</a>
+  <a href="/trainer/requests">入会申請{% if pending_count %}（{{ pending_count }}）{% endif %}</a>
+  <span style="margin-left:auto"></span>
+  <form class="inline" method="post" action="/logout">
+    <button class="btn btn-ghost" type="submit">ログアウト</button>
+  </form>
+</header>
+<main>{% block content %}{% endblock %}</main>
+</body>
+</html>

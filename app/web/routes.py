@@ -13,13 +13,24 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 from app import auth
-from app.services.gym_db import upsert_user, get_membership_for_user
+from app.services.gym_db import (
+    upsert_user, get_membership_for_user, is_staff,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # OAuth state の簡易保持（無料枠=単一プロセス前提。再起動で消えるが許容）
 _pending_states: set = set()
+
+
+@router.get("/")
+def index(request: Request):
+    """入口: ログイン済みスタッフは管理画面へ、それ以外はログインへ."""
+    uid = auth.current_user_id(request)
+    if uid and is_staff(uid):
+        return RedirectResponse("/trainer")
+    return RedirectResponse("/login")
 
 
 @router.get("/login")
@@ -47,7 +58,9 @@ def auth_callback(code: str = "", state: str = "",
     uid = claims["sub"]
     upsert_user(uid, claims.get("name"), claims.get("picture"))
 
-    resp = RedirectResponse("/api/me")  # Phase 2 でロール別画面に振り分ける
+    # ロールで遷移先を振り分け（スタッフ→管理画面、会員→Phase 3 までは状態表示）
+    dest = "/trainer" if is_staff(uid) else "/api/me"
+    resp = RedirectResponse(dest)
     resp.set_cookie(auth.SESSION_COOKIE, auth.issue_session(uid),
                     httponly=True, samesite="lax", secure=True,
                     max_age=auth.SESSION_MAX_AGE)

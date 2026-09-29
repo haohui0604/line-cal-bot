@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}担当会員{% endblock %}
+{% block content %}
+<h2>担当会員</h2>
+{% if not members %}
+<div class="card muted">
+  まだ担当会員がいません。<br><br>
+  ① LINEボットに「ジム作成 ジム名」と送信（管理者のみ）<br>
+  ② 発行された入会コード（例: GYM-XXXX）を会員に伝える<br>
+  ③ 会員がボットにそのコードを送信すると「入会申請」に表示されます
+</div>
+{% else %}
+<div class="card" style="padding:0;overflow:hidden">
+<table>
+  <tr><th></th><th>会員</th><th>ジム</th><th>今日の摂取</th><th>最終記録</th></tr>
+  {% for m in members %}
+  <tr onclick="location.href='/trainer/members/{{ m.user_id }}'" style="cursor:pointer">
+    <td style="width:44px">{% if m.picture_url %}<img class="avatar" src="{{ m.picture_url }}" alt="">{% endif %}</td>
+    <td><a href="/trainer/members/{{ m.user_id }}">{{ m.display_name or m.user_id }}</a></td>
+    <td class="muted">{{ m.gym_name }}</td>
+    <td>{{ "%.0f"|format(m.today_kcal) }} kcal</td>
+    <td class="muted">{{ m.last_record_date or "—" }}</td>
+  </tr>
+  {% endfor %}
+</table>
+</div>
+{% endif %}
+{% endblock %}

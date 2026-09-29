@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}入会申請{% endblock %}
+{% block content %}
+<h2>入会申請</h2>
+{% if not requests %}
+<div class="card muted">保留中の申請はありません。</div>
+{% else %}
+{% for r in requests %}
+<div class="card" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+  {% if r.picture_url %}<img class="avatar" src="{{ r.picture_url }}" alt="">{% endif %}
+  <div style="flex:1;min-width:160px">
+    <b>{{ r.display_name or r.user_id }}</b>
+    <div class="muted">{{ r.gym_name }} ・ {{ r.created_at }}</div>
+  </div>
+  <form class="inline" method="post" action="/trainer/requests/{{ r.id }}/approve">
+    <button class="btn" type="submit">✅ 承認（自分が担当になる）</button>
+  </form>
+  <form class="inline" method="post" action="/trainer/requests/{{ r.id }}/reject">
+    <button class="btn btn-ghost" type="submit">却下</button>
+  </form>
+</div>
+{% endfor %}
+{% endif %}
+{% endblock %}

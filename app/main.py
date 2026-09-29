@@ -18,6 +18,10 @@ app = FastAPI(title="line-cal-bot")
 from app.web.routes import router as web_router
 app.include_router(web_router)
 
+# トレーナー / ジム管理者向け画面 (Phase 2)
+from app.web.staff import router as staff_router
+app.include_router(staff_router)
+
 line_bot_api = LineBotApi(settings.LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(settings.LINE_CHANNEL_SECRET)
 

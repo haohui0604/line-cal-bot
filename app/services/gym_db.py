@@ -219,3 +219,90 @@ def fetch_active_directives(user_id: str, days: int = 28) -> List[Dict[str, Any]
             " AND created_at >= datetime('now', ?)"
             " ORDER BY created_at DESC", (user_id, f"-{days} days")).fetchall()
     return [dict(r) for r in rows]
+
+
+# ---- スタッフ（トレーナー / ジム管理者）向けの参照・権限 (Phase 2) ----
+
+def get_staff_memberships(user_id: str) -> List[Dict[str, Any]]:
+    """そのユーザーが trainer / gym_admin として active な所属一覧."""
+    with get_conn() as c:
+        rows = c.execute(
+            "SELECT m.id, m.gym_id, m.role, g.name AS gym_name"
+            " FROM memberships m JOIN gyms g ON g.id=m.gym_id"
+            " WHERE m.user_id=? AND m.role IN ('trainer','gym_admin')"
+            " AND m.status='active'", (user_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def is_staff(user_id: str) -> bool:
+    return len(get_staff_memberships(user_id)) > 0
+
+
+def list_members_for_staff(staff_id: str) -> List[Dict[str, Any]]:
+    """スタッフが見てよい会員一覧（自分の担当 + 自分がadminのジム全会員）."""
+    with get_conn() as c:
+        rows = c.execute("""
+            SELECT DISTINCT m.user_id, m.gym_id, m.trainer_id,
+                   u.display_name, u.picture_url, g.name AS gym_name
+            FROM memberships m
+            JOIN gyms g ON g.id = m.gym_id
+            LEFT JOIN users u ON u.line_user_id = m.user_id
+            WHERE m.role='member' AND m.status='active' AND (
+                m.trainer_id = ?
+                OR m.gym_id IN (
+                    SELECT gym_id FROM memberships
+                    WHERE user_id=? AND role='gym_admin' AND status='active')
+            )
+            ORDER BY u.display_name
+        """, (staff_id, staff_id)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def can_staff_view_member(staff_id: str, member_id: str) -> bool:
+    """会員詳細・コメント投稿の権限チェック."""
+    with get_conn() as c:
+        row = c.execute("""
+            SELECT 1 FROM memberships m
+            WHERE m.role='member' AND m.status='active' AND m.user_id=? AND (
+                m.trainer_id = ?
+                OR m.gym_id IN (
+                    SELECT gym_id FROM memberships
+                    WHERE user_id=? AND role='gym_admin' AND status='active')
+            ) LIMIT 1
+        """, (member_id, staff_id, staff_id)).fetchone()
+    return row is not None
+
+
+def list_pending_for_staff(staff_id: str) -> List[Dict[str, Any]]:
+    """スタッフの所属ジムに届いている pending 入会申請一覧."""
+    with get_conn() as c:
+        rows = c.execute("""
+            SELECT m.id, m.user_id, m.gym_id, m.created_at,
+                   u.display_name, u.picture_url, g.name AS gym_name
+            FROM memberships m
+            JOIN gyms g ON g.id = m.gym_id
+            LEFT JOIN users u ON u.line_user_id = m.user_id
+            WHERE m.role='member' AND m.status='pending' AND m.gym_id IN (
+                SELECT gym_id FROM memberships
+                WHERE user_id=? AND role IN ('trainer','gym_admin')
+                AND status='active')
+            ORDER BY m.id
+        """, (staff_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_request_for_staff(staff_id: str, membership_id: int) -> Optional[Dict[str, Any]]:
+    """承認/却下の権限チェックつきで申請を1件取得."""
+    with get_conn() as c:
+        row = c.execute("""
+            SELECT m.*, g.name AS gym_name, u.display_name
+            FROM memberships m
+            JOIN gyms g ON g.id = m.gym_id
+            LEFT JOIN users u ON u.line_user_id = m.user_id
+            WHERE m.id=? AND m.role='member' AND m.status='pending'
+              AND m.gym_id IN (
+                SELECT gym_id FROM memberships
+                WHERE user_id=? AND role IN ('trainer','gym_admin')
+                AND status='active')
+        """, (membership_id, staff_id)).fetchone()
+    return _d(row)
