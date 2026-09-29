@@ -13,10 +13,15 @@ class Settings(BaseSettings):
     TURSO_DATABASE_URL: str = os.getenv("TURSO_DATABASE_URL", "")
     TURSO_AUTH_TOKEN: str = os.getenv("TURSO_AUTH_TOKEN", "")
 
+    # --- Web / LINEログイン (Phase 1) ---
+    LINE_LOGIN_CHANNEL_ID: str = ""
+    LINE_LOGIN_CHANNEL_SECRET: str = ""
+    BASE_URL: str = "http://localhost:8000"  # 本番: https://your-app.onrender.com
+    SESSION_SECRET: str = "dev-only-secret"  # 本番は必ず長い乱数に変更
+
     class Config:
         env_file = ".env"
 
 settings = Settings()
 
 Path(settings.DB_PATH).parent.mkdir(parents=True, exist_ok=True)
-

@@ -12,6 +12,11 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="line-cal-bot")
+
+# Web (LINEログイン / LIFF) ルート
+from app.web.routes import router as web_router
+app.include_router(web_router)
+
 line_bot_api = LineBotApi(settings.LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(settings.LINE_CHANNEL_SECRET)
 

@@ -1,0 +1,20 @@
+# Render 無料枠のスリープ防止（補助用）
+# 注意: GitHub Actions の schedule は混雑時に 5〜30 分遅れることがあり、
+#       これ単体ではスリープを確実には防げません。
+#       本番では UptimeRobot（無料・5分間隔・安定）を主、
+#       このワークフローはバックアップとして併用してください。
+name: keepalive
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # 10分おき（実際は遅延することがある）
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: ping health endpoint
+        run: |
+          curl -fsS --max-time 30 \
+            "https://line-cal-bot.onrender.com/health" || exit 1
+        # ↑ URL は自分の Render サービスの URL に書き換えてください

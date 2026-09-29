@@ -365,9 +365,9 @@ def handle_text(user_id: str, text: str):
                 "『使い方』で全機能を確認できます"
             ))
 
-        # 0.05) 削除の確認応答
+        # 0.05) 削除の確認応答（ボタン or テキスト）
         if user_id in _delete_pending:
-            if text in ("はい", "うん", "ok", "OK", "Yes", "YES"):
+            if text in ("はい", "うん", "ok", "OK", "Yes", "YES", "delete:yes"):
                 r = _delete_pending.pop(user_id)
                 if delete_entry(user_id=user_id, entry_id=r["id"]):
                     label = (f"{r['date']} {_slot_jp(r['meal_slot'])} "
@@ -378,13 +378,13 @@ def handle_text(user_id: str, text: str):
                         f"🗑 削除しました: {label}"))
                 return TextSendMessage(text=(
                     "⚠ 削除できませんでした（既に削除済みかもしれません）"))
-            if text in ("いいえ", "やめる", "キャンセル"):
+            if text in ("いいえ", "やめる", "キャンセル", "delete:no"):
                 _delete_pending.pop(user_id)
                 return TextSendMessage(text="削除をキャンセルしました")
 
-        # 0) LLM 推定の確定/取消
+        # 0) LLM 推定の確定/取消（ボタン or テキスト）
         if user_id in _pending and text in (
-            "はい", "うん", "記録", "ok", "OK", "Yes", "YES"
+            "はい", "うん", "記録", "ok", "OK", "Yes", "YES", "confirm:yes"
         ):
             p = _pending.pop(user_id)
             _save_foods(user_id, p["foods"], p["meal_slot"],
@@ -395,7 +395,8 @@ def handle_text(user_id: str, text: str):
                 "『集計』で今日の合計を確認できます"
             ))
         if user_id in _pending and text in (
-            "いいえ", "やめる", "キャンセル", "ng", "NG", "No", "NO"
+            "いいえ", "やめる", "キャンセル", "ng", "NG", "No", "NO",
+            "confirm:no"
         ):
             _pending.pop(user_id)
             return TextSendMessage(text="記録をキャンセルしました")
@@ -755,12 +756,16 @@ def handle_text(user_id: str, text: str):
                     "番号を特定できませんでした。先に『履歴』を送り、"
                     "表示された番号で『削除 3』と指定してください"))
             _delete_pending[user_id] = r
-            return TextSendMessage(text=(
+            msg = TextSendMessage(text=(
                 "次の記録を削除しますか？\n"
                 f"・{r['date']} {_slot_jp(r['meal_slot'])} "
-                f"{r['food_name']} {r['kcal']:.0f}kcal\n"
-                "→「はい」/「いいえ」"
+                f"{r['food_name']} {r['kcal']:.0f}kcal"
             ))
+            msg.quick_reply = qr(
+                pb("🗑 削除する", "cmd=delete_yes", "削除する"),
+                pb("キャンセル", "cmd=delete_no", "キャンセル"),
+            )
+            return msg
 
         # 3.3) 日付ごとの一括削除
         m = DELETE_DATE_PAT.match(text)
@@ -967,11 +972,15 @@ def handle_text(user_id: str, text: str):
                 "meal_slot": slot_en or "snack",
                 "date": target_date,
             }
-            return TextSendMessage(text=(
+            msg = TextSendMessage(text=(
                 f"{food} {kcal:.0f}kcal を {target_date} の"
-                f" {slot_en or 'snack'} として記録しますか？\n"
-                "→「はい」/「いいえ」"
+                f" {slot_en or 'snack'} として記録しますか？"
             ))
+            msg.quick_reply = qr(
+                pb("✅ 記録する", "cmd=confirm_yes", "記録する"),
+                pb("キャンセル", "cmd=confirm_no", "キャンセル"),
+            )
+            return msg
 
         # 10) ルールベース食事登録
         m = DATE_PAT.match(text)
@@ -1081,8 +1090,13 @@ def _handle_llm(user_id: str, text: str):
             )
         lines.append(f"合計 約{total_kcal:.0f}kcal")
         lines.append("")
-        lines.append("この内容で記録しますか？ →「はい」/「いいえ」")
-        return TextSendMessage(text="\n".join(lines))
+        lines.append("この内容で記録しますか？")
+        msg = TextSendMessage(text="\n".join(lines))
+        msg.quick_reply = qr(
+            pb("✅ 記録する", "cmd=confirm_yes", "記録する"),
+            pb("キャンセル", "cmd=confirm_no", "キャンセル"),
+        )
+        return msg
 
     answer = (result.get("answer") or "").strip()
     parts = [p for p in (reaction, answer) if p]

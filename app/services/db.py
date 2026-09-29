@@ -31,6 +31,10 @@ class _CompatCursor:
     def rowcount(self):
         return self._cur.rowcount
 
+    @property
+    def lastrowid(self):
+        return self._cur.lastrowid
+
 
 class _CompatConn:
     """libsql 接続を sqlite3.Connection 風に包むラッパー."""
