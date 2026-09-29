@@ -1,0 +1,70 @@
+from fastapi import FastAPI, Request, Header, HTTPException
+from linebot import LineBotApi, WebhookHandler
+from linebot.exceptions import InvalidSignatureError
+from linebot.models import MessageEvent, TextMessage, ImageMessage, PostbackEvent
+from linebot.models import TextSendMessage
+from app.config import settings
+from app.services.db import init_db
+from app.services.keepalive import start_keepalive
+from app.webhook import on_message, on_postback
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+app = FastAPI(title="line-cal-bot")
+
+# Web (LINEログイン / LIFF) ルート
+from app.web.routes import router as web_router
+app.include_router(web_router)
+
+line_bot_api = LineBotApi(settings.LINE_CHANNEL_ACCESS_TOKEN)
+handler = WebhookHandler(settings.LINE_CHANNEL_SECRET)
+
+
+@app.on_event("startup")
+async def _startup():
+    init_db()
+    logger.info("DB initialized at %s", settings.DB_PATH)
+    # 無料枠のスリープ対策（BASE_URL が https のときだけ動く）
+    start_keepalive()
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
+@app.post("/callback")
+async def callback(
+    request: Request,
+    x_line_signature: str = Header(alias="X-Line-Signature"),
+):
+    body = (await request.body()).decode("utf-8")
+    try:
+        handler.handle(body, x_line_signature)
+    except InvalidSignatureError:
+        logger.warning("invalid signature")
+        raise HTTPException(status_code=400, detail="invalid signature")
+    return {"ok": True}
+
+
+# テキストメッセージ
+@handler.add(MessageEvent, message=TextMessage)
+def _on_text(event):
+    on_message(event, line_bot_api)
+
+
+# 画像メッセージ（← 前回の修正。これが無いと画像が無言になる）
+@handler.add(MessageEvent, message=ImageMessage)
+def _on_image(event):
+    on_message(event, line_bot_api)
+
+
+# リッチメニュー等のpostback → コマンドに変換して既存ロジックへ流す
+@handler.add(PostbackEvent)
+def _on_postback(event):
+    try:
+        on_postback(event, line_bot_api)
+    except Exception:
+        logger.exception("postback handling failed")
