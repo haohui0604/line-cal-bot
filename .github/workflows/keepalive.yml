@@ -16,5 +16,5 @@ jobs:
       - name: ping health endpoint
         run: |
           curl -fsS --max-time 30 \
-            "https://line-cal-bot.onrender.com/health" || exit 1
+            "https://oga-cal.onrender.com/health" || exit 1
         # ↑ URL は自分の Render サービスの URL に書き換えてください
