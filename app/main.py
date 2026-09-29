@@ -5,6 +5,7 @@ from linebot.models import MessageEvent, TextMessage, ImageMessage, PostbackEven
 from linebot.models import TextSendMessage
 from app.config import settings
 from app.services.db import init_db
+from app.services.keepalive import start_keepalive
 from app.webhook import on_message, on_postback
 import logging
 
@@ -22,9 +23,11 @@ handler = WebhookHandler(settings.LINE_CHANNEL_SECRET)
 
 
 @app.on_event("startup")
-def _startup():
+async def _startup():
     init_db()
     logger.info("DB initialized at %s", settings.DB_PATH)
+    # 無料枠のスリープ対策（BASE_URL が https のときだけ動く）
+    start_keepalive()
 
 
 @app.get("/health")

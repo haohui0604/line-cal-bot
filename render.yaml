@@ -16,3 +16,15 @@ services:
         value: /opt/render/project/src/data/cal.db
       - key: PYTHON_VERSION
         value: 3.11.0
+      - key: BASE_URL
+        sync: false
+      - key: SESSION_SECRET
+        sync: false
+      - key: ADMIN_USER_IDS
+        sync: false
+      - key: LINE_LOGIN_CHANNEL_ID
+        sync: false
+      - key: LINE_LOGIN_CHANNEL_SECRET
+        sync: false
+      - key: SELF_PING_INTERVAL_SEC
+        value: "600"

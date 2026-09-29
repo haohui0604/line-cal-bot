@@ -18,6 +18,16 @@ class Settings(BaseSettings):
     LINE_LOGIN_CHANNEL_SECRET: str = ""
     BASE_URL: str = "http://localhost:8000"  # 本番: https://your-app.onrender.com
     SESSION_SECRET: str = "dev-only-secret"  # 本番は必ず長い乱数に変更
+    # ジム作成などの管理操作を許可する LINE user ID（カンマ区切り）
+    ADMIN_USER_IDS: str = ""
+
+    # --- スリープ対策（Render無料枠の15分スリープより短くする） ---
+    SELF_PING_ENABLED: bool = True
+    SELF_PING_INTERVAL_SEC: int = 600   # 10分
+
+    @property
+    def admin_user_id_set(self) -> set:
+        return {s.strip() for s in self.ADMIN_USER_IDS.split(",") if s.strip()}
 
     class Config:
         env_file = ".env"

@@ -4,6 +4,7 @@ from urllib.parse import parse_qs
 from linebot.models import TextMessage, ImageMessage, TextSendMessage
 from app.handlers.text_handler import handle_text
 from app.handlers.image_handler import handle_image
+from app.config import settings
 from app.services.gym_db import (
     upsert_user, find_gym_by_code, request_join, create_gym,
 )
@@ -94,7 +95,14 @@ def _get_profile_safe(user_id, line_bot_api):
 
 
 def _handle_create_gym(user_id: str, name: str, line_bot_api):
-    """PoC用: LINEからジムを作成し、発行者をオーナー(gym_admin)にする。"""
+    """管理者専用: LINEからジムを作成し、発行者をオーナー(gym_admin)にする。
+
+    ADMIN_USER_IDS に含まれないユーザからの実行は拒否する。
+    """
+    if user_id not in settings.admin_user_id_set:
+        logger.warning("unauthorized gym creation attempt by %s", user_id)
+        return TextSendMessage(
+            text="ジムの作成は管理者のみ行えます。")
     display_name, picture_url = _get_profile_safe(user_id, line_bot_api)
     upsert_user(user_id, display_name, picture_url)
     gym = create_gym(name=name, owner_user_id=user_id)
