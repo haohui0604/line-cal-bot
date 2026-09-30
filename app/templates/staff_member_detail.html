@@ -84,9 +84,9 @@
   new Chart(document.getElementById("calChart"), {
     data: { labels: d.labels, datasets: [
       { type: "bar", label: "摂取 kcal", data: d.intake,
-        backgroundColor: "#06c75555", borderColor: "#06c755", borderWidth: 1 },
-      { type: "line", label: "消費 kcal", data: d.burn,
-        borderColor: "#f59e0b", tension: .3, pointRadius: 2 }
+        backgroundColor: "#06c75566", borderColor: "#06c755", borderWidth: 1 },
+      { type: "bar", label: "消費 kcal", data: d.burn,
+        backgroundColor: "#f59e0b66", borderColor: "#f59e0b", borderWidth: 1 }
     ]},
     options: { responsive: true, interaction: { mode: "index" } }
   });

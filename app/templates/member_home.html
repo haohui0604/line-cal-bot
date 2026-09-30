@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>マイ記録</title>
+<script src="https://static.line-scdn.me/liff/edge/2/sdk.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+  :root{ --bg:#f6f7f9; --card:#fff; --line:#e5e7eb; --text:#1f2937;
+         --muted:#6b7280; --accent:#06c755; }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font-family:-apple-system,"Hiragino Kaku Gothic ProN",Meiryo,sans-serif}
+  header{background:var(--card);border-bottom:1px solid var(--line);
+         padding:14px 16px;font-weight:700}
+  main{max-width:640px;margin:0 auto;padding:16px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;
+        padding:16px;margin-bottom:14px}
+  .stat{font-size:24px;font-weight:700}
+  .muted{color:var(--muted);font-size:13px}
+  .tabs{display:flex;gap:8px;margin-bottom:14px}
+  .tabs button{flex:1;padding:10px;border:1px solid var(--line);background:#fff;
+               border-radius:8px;font-size:14px;cursor:pointer}
+  .tabs button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .badge{display:inline-block;background:#fef3c7;color:#92400e;
+         border-radius:999px;padding:2px 10px;font-size:12px}
+  .badge-green{background:#dcfce7;color:#166534}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{padding:8px 6px;border-bottom:1px solid var(--line);text-align:left}
+  #err{display:none;background:#fee2e2;color:#991b1b;padding:12px;
+       border-radius:8px;margin-bottom:14px}
+  .loading{text-align:center;color:var(--muted);padding:40px 0}
+</style>
+</head>
+<body>
+<header>📊 マイ記録</header>
+<main>
+  <div id="err"></div>
+  <div id="loading" class="loading">読み込み中…</div>
+  <div id="app" style="display:none">
+
+    <div class="card">
+      <div class="muted">今日の収支</div>
+      <div class="stat"><span id="tIntake">0</span> kcal 摂取
+        <span class="muted">/</span> <span id="tBurn">0</span> kcal 消費</div>
+      <div class="muted">P <span id="tP">0</span>g ・ F <span id="tF">0</span>g
+        ・ C <span id="tC">0</span>g</div>
+    </div>
+
+    <div class="card">
+      <b>📈 カロリー推移（14日）</b>
+      <canvas id="calChart" height="160"></canvas>
+    </div>
+    <div class="card">
+      <b>⚖️ 体重推移（14日）</b>
+      <canvas id="weightChart" height="130"></canvas>
+    </div>
+
+    <div class="tabs">
+      <button id="tabComments" class="on">💬 コメント</button>
+      <button id="tabHistory">🍽 履歴</button>
+    </div>
+    <div id="paneComments" class="card"></div>
+    <div id="paneHistory" class="card" style="display:none"></div>
+  </div>
+</main>
+
+<script>
+const LIFF_ID = {{ liff_id | tojson }};
+let idToken = null;
+
+function showErr(msg){
+  const e = document.getElementById("err");
+  e.textContent = msg; e.style.display = "block";
+  document.getElementById("loading").style.display = "none";
+}
+
+async function api(path){
+  const res = await fetch(path, {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({id_token: idToken})
+  });
+  if(!res.ok) throw new Error("API error " + res.status);
+  return res.json();
+}
+
+function fmt(v){ return Math.round(v || 0); }
+
+async function main(){
+  await liff.init({liffId: LIFF_ID});
+  if(!liff.isLoggedIn()){ liff.login(); return; }
+  idToken = liff.getIDToken();
+  if(!idToken){ showErr("認証情報を取得できませんでした"); return; }
+
+  const s = await api("/api/me/summary");
+  document.getElementById("tIntake").textContent = fmt(s.today.intake_kcal);
+  document.getElementById("tBurn").textContent =
+    fmt(s.today.burn_kcal || s.today.burn);
+  document.getElementById("tP").textContent = fmt(s.today.protein_g);
+  document.getElementById("tF").textContent = fmt(s.today.fat_g);
+  document.getElementById("tC").textContent = fmt(s.today.carb_g);
+
+  new Chart(document.getElementById("calChart"), {
+    data: { labels: s.labels, datasets: [
+      { type:"bar", label:"摂取 kcal", data:s.intake,
+        backgroundColor:"#06c75566", borderColor:"#06c755", borderWidth:1 },
+      { type:"bar", label:"消費 kcal", data:s.burn,
+        backgroundColor:"#f59e0b66", borderColor:"#f59e0b", borderWidth:1 }
+    ]},
+    options:{ responsive:true, interaction:{mode:"index"} }
+  });
+  new Chart(document.getElementById("weightChart"), {
+    type:"line",
+    data:{ labels:s.weight_labels, datasets:[
+      { label:"体重 kg", data:s.weight, borderColor:"#3b82f6",
+        tension:.3, pointRadius:2, spanGaps:true }
+    ]},
+    options:{ responsive:true }
+  });
+
+  // コメント
+  const c = await api("/api/me/comments");
+  const pc = document.getElementById("paneComments");
+  pc.innerHTML = c.comments.length ? "" : '<p class="muted">まだコメントはありません。</p>';
+  for(const cm of c.comments){
+    const div = document.createElement("div");
+    div.style.cssText = "border-bottom:1px solid var(--line);padding:10px 0";
+    const badge = cm.author_type === "trainer"
+      ? '<span class="badge">トレーナー</span>'
+      : '<span class="badge badge-green">AIコーチ</span>';
+    div.innerHTML = badge + ' <span class="muted">' + (cm.created_at||"") +
+      '</span><div style="margin-top:4px;white-space:pre-wrap"></div>';
+    div.querySelector("div").textContent = cm.body;
+    pc.appendChild(div);
+  }
+
+  // 履歴
+  const h = await api("/api/me/history");
+  const ph = document.getElementById("paneHistory");
+  if(!h.entries.length){
+    ph.innerHTML = '<p class="muted">記録はまだありません。</p>';
+  } else {
+    let html = '<table><tr><th>日付</th><th>区分</th><th>内容</th><th>kcal</th></tr>';
+    for(const e of h.entries){
+      html += "<tr><td class='muted'>" + e.date + "</td><td>" + e.meal_slot +
+        "</td><td></td><td>" + fmt(e.kcal) + "</td></tr>";
+    }
+    ph.innerHTML = html + "</table>";
+    const tds = ph.querySelectorAll("tr td:nth-child(3)");
+    h.entries.forEach((e, i) => { tds[i].textContent = e.food_name; });
+  }
+
+  document.getElementById("loading").style.display = "none";
+  document.getElementById("app").style.display = "block";
+
+  // タブ切替
+  document.getElementById("tabComments").onclick = () => switchTab(true);
+  document.getElementById("tabHistory").onclick = () => switchTab(false);
+}
+function switchTab(showComments){
+  document.getElementById("paneComments").style.display = showComments ? "" : "none";
+  document.getElementById("paneHistory").style.display = showComments ? "none" : "";
+  document.getElementById("tabComments").className = showComments ? "on" : "";
+  document.getElementById("tabHistory").className = showComments ? "" : "on";
+}
+main().catch(e => { console.error(e); showErr("読み込みに失敗しました。LINEから開き直してください。"); });
+</script>
+</body>
+</html>

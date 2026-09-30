@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     # --- Web / LINEログイン (Phase 1) ---
     LINE_LOGIN_CHANNEL_ID: str = ""
     LINE_LOGIN_CHANNEL_SECRET: str = ""
+    LIFF_ID: str = ""   # LIFFアプリのID（例: 2008123456-abcdefgh）
     BASE_URL: str = "http://localhost:8000"  # 本番: https://your-app.onrender.com
     SESSION_SECRET: str = "dev-only-secret"  # 本番は必ず長い乱数に変更
     # ジム作成などの管理操作を許可する LINE user ID（カンマ区切り）

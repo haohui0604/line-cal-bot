@@ -22,6 +22,10 @@ app.include_router(web_router)
 from app.web.staff import router as staff_router
 app.include_router(staff_router)
 
+# 会員向けLIFF画面 (Phase 3)
+from app.web.member import router as member_router
+app.include_router(member_router)
+
 line_bot_api = LineBotApi(settings.LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(settings.LINE_CHANNEL_SECRET)
 
