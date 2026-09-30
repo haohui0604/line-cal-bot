@@ -380,3 +380,29 @@ def fetch_comments_for_date(user_id: str, target_date: str):
             " WHERE cm.user_id=? AND cm.target_date=?"
             " ORDER BY cm.created_at", (user_id, target_date)).fetchall()
     return [dict(r) for r in rows]
+
+
+def fetch_past_trainer_comments(user_id: str, before_date: str,
+                                days: int = 14, limit: int = 5):
+    """対象日より「前」の日付に付いたトレーナーコメントを新しい順に返す。
+
+    当日のコメントは含めない（その日のAIコメントがトレーナーの
+    発言をなぞってしまうのを防ぐため）。
+    """
+    from datetime import date as _d, timedelta as _td
+    try:
+        base = _d.fromisoformat(str(before_date)[:10])
+    except Exception:
+        return []
+    since = (base - _td(days=days)).isoformat()
+    with get_conn() as c:
+        rows = c.execute(
+            "SELECT cm.*, u.display_name AS author_name FROM comments cm"
+            " LEFT JOIN users u ON u.line_user_id=cm.author_id"
+            " WHERE cm.user_id=? AND cm.author_type='trainer'"
+            "   AND cm.target_date IS NOT NULL AND cm.target_date<>''"
+            "   AND cm.target_date < ? AND cm.target_date >= ?"
+            " ORDER BY cm.target_date DESC, cm.created_at DESC"
+            " LIMIT ?", (user_id, str(before_date)[:10], since, limit)
+        ).fetchall()
+    return [dict(r) for r in rows]

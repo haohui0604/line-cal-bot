@@ -1,8 +1,14 @@
-"""日別ビュー用のAIコーチコメント生成 (Phase 3.5).
+"""日別ビュー用のAIコーチコメント生成 (Phase 3.5d).
 
-- ユーザー個人の人格設定 (user_settings) をそのまま声として使う
-- トレーナーの⭐指導 (comments.is_directive) をプロンプトに常時注入
-- report_comments テーブルをキャッシュとして流用
+コメントの順序（設計）:
+  1. AIは自分の見立てを先に述べる（データ → 自分の判断）
+  2. そのうえで、**過去の日付**に付いたトレーナーコメントが関係する場合だけ
+     「〇〇さんも前に言ってたな」と一言添える
+  3. 同じ日に付いたトレーナーコメントは、AIコメント生成時には参照しない
+     （トレーナーが後から付けた内容を、その日のAIコメントがなぞるのを防ぐ）
+
+これにより「その日のデータが固まる → AIコメント → トレーナーコメント →
+翌日以降のAIコメントがそれを考慮」という順序が保たれる。
 """
 import hashlib
 import json
@@ -16,7 +22,7 @@ from app.services.db import (
     get_goal, fetch_latest_weight, load_user_persona,
     get_report_comment, save_report_comment,
 )
-from app.services.gym_db import fetch_active_directives
+from app.services.gym_db import fetch_active_directives, fetch_past_trainer_comments
 from app.services.goals import context_line as goal_context_line
 from app.services.day_view import SLOT_JP
 
@@ -24,6 +30,10 @@ logger = logging.getLogger(__name__)
 
 MODELS = ("gemini-flash-latest", "gemini-2.0-flash", "gemini-flash-lite-latest")
 API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
+
+# 過去のトレーナーコメントを何日分さかのぼるか
+PAST_COMMENT_DAYS = 14
+PAST_COMMENT_LIMIT = 5
 
 try:
     from app.config import settings
@@ -49,6 +59,14 @@ def _build_facts(user_id: str, target_date: str) -> dict:
         f" {round(e.get('kcal') or 0)}kcal"
         for e in entries
     ]
+    # 対象日より「前」の日付に付いたトレーナーコメントのみ（当日分は含めない）
+    try:
+        past = fetch_past_trainer_comments(
+            user_id, before_date=target_date,
+            days=PAST_COMMENT_DAYS, limit=PAST_COMMENT_LIMIT)
+    except Exception:
+        logger.exception("fetch_past_trainer_comments failed")
+        past = []
     facts = {
         "date": target_date,
         "intake": round(s.get("intake_kcal") or 0),
@@ -59,7 +77,15 @@ def _build_facts(user_id: str, target_date: str) -> dict:
         "carb_g": round(s.get("carb_g") or 0, 1),
         "weight_kg": weight_kg,
         "foods": foods,
+        "past_trainer": [
+            {"date": p.get("target_date"), "author": p.get("author_name"),
+             "body": p.get("body"), "directive": bool(p.get("is_directive"))}
+            for p in past
+        ],
     }
+    # ハッシュに「過去のトレーナーコメント」を含める。
+    # → 過去日にコメントが付くと翌日以降のキャッシュが自動で作り直される。
+    #    同じ日にコメントが付いても、その日のキャッシュは変化しない（意図どおり）。
     facts["hash"] = hashlib.md5(
         json.dumps(facts, ensure_ascii=False, sort_keys=True).encode()
     ).hexdigest()[:12]
@@ -78,22 +104,40 @@ def _rule_based(f: dict) -> str:
     return "".join(parts)
 
 
-def _generate(user_id: str, f: dict) -> str:
-    if not _KEY:
-        raise RuntimeError("GEMINI_API_KEY 未設定")
-    persona = load_user_persona(user_id)
-    directives = fetch_active_directives(user_id)
-    goal_line = goal_context_line(user_id)
+def build_prompt(persona: dict, f: dict, goal_line: str = "",
+                 directives=None) -> str:
+    """AIコーチ用プロンプトを組み立てる（テスト可能なよう関数化）.
 
-    dir_text = ""
-    if directives:
+    重要: 「自分の見立て → トレーナーへの言及」の順序をプロンプトで明示する。
+    """
+    directives = directives or []
+    past = f.get("past_trainer") or []
+
+    past_block = ""
+    if past:
+        lines = []
+        for p in past:
+            who = p.get("author") or "トレーナー"
+            mark = "（⭐方針）" if p.get("directive") else ""
+            lines.append(f"- {p.get('date')} {who}: {p.get('body')}{mark}")
+        past_block = (
+            "\n# 過去の担当トレーナーからの指導（参考情報）\n"
+            + "\n".join(lines) + "\n")
+    elif directives:
         lines = "\n".join(f"- {d['body']}" for d in directives)
-        dir_text = (
-            "\n\n# 担当トレーナーからの指導方針（重要・必ず考慮し、"
-            "自然に言及すること）\n" + lines)
+        past_block = (
+            "\n# 過去の担当トレーナーからの指導（参考情報）\n"
+            + lines + "\n")
 
-    prompt = f"""あなたはユーザーの食事・運動に伴走するコーチ「{persona['bot_name']}」です。
+    return f"""あなたはユーザーの食事・運動に伴走するコーチ「{persona['bot_name']}」です。
 一人称は「{persona['bot_pronoun']}」。性格・口調: {persona['bot_tone'] or '優しく励ます'}
+
+# 話す順番（厳守）
+1. まず、下の数値だけを見て「あなた自身の見立て」を述べる。何が良くて何を変えるかは自分で判断する。
+2. そのあとで、過去のトレーナー指導が今日の内容に本当に関係する場合に限り、
+   「{'{trainer}'}さんも前に言ってたな」のように一言だけ添える。
+3. トレーナーの発言をそのまま繰り返す・要約して済ませるのは禁止。あなたの意見が主、トレーナーは補足。
+4. 過去の指導が今日の内容に関係しないなら、無理に触れなくてよい。
 
 # 対象日のデータ（確定値。改変・捏造は禁止）
 - 日付: {f['date']}
@@ -103,14 +147,23 @@ def _generate(user_id: str, f: dict) -> str:
 - 体重: {f['weight_kg'] if f['weight_kg'] else '不明'}kg
 - 目的・目標: {goal_line or '未設定'}
 - 食事内容: {', '.join(f['foods']) if f['foods'] else '記録なし'}
-{dir_text}
-
+{past_block}
 # ルール
 - 数値は与えられた値をそのまま引用する
 - 医療的な診断・断定（痩せます、治ります等）は禁止
 - ユーザーを責めない。「事実 → 次の一手（具体的行動）」の順で
 - 120字以内のコメント本文のみを返す（前置き・JSON・記号装飾は不要）
 """
+
+
+def _generate(user_id: str, f: dict) -> str:
+    if not _KEY:
+        raise RuntimeError("GEMINI_API_KEY 未設定")
+    persona = load_user_persona(user_id)
+    directives = fetch_active_directives(user_id)
+    goal_line = goal_context_line(user_id)
+    prompt = build_prompt(persona, f, goal_line=goal_line,
+                          directives=directives)
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"temperature": 0.6, "maxOutputTokens": 512},
@@ -133,7 +186,14 @@ def _generate(user_id: str, f: dict) -> str:
 
 
 def get_day_comment(user_id: str, target_date: str) -> dict:
-    """日次AIコメントを返す（キャッシュ優先）."""
+    """日次AIコメントを返す（キャッシュ優先）.
+
+    キャッシュキーは facts ハッシュ（当日データ + 過去のトレーナーコメント）
+    に依存するため、
+      - 当日のデータが変われば作り直される
+      - 過去日にトレーナーコメントが付くと、翌日以降が作り直される
+      - 同じ日にトレーナーコメントを付けても、その日のAIコメントは変わらない
+    """
     facts = _build_facts(user_id, target_date)
     key = f"dayview:{user_id}:{target_date}:{facts['hash']}"
 

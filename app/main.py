@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Request, Header, HTTPException
+from fastapi.staticfiles import StaticFiles
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, ImageMessage, PostbackEvent
@@ -13,6 +14,12 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="line-cal-bot")
+
+# 静的ファイル（日別ビューの日付演算など）
+import os as _os
+_STATIC = _os.path.join(_os.path.dirname(__file__), "static")
+if _os.path.isdir(_STATIC):
+    app.mount("/static", StaticFiles(directory=_STATIC), name="static")
 
 # Web (LINEログイン / LIFF) ルート
 from app.web.routes import router as web_router
