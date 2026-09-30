@@ -26,6 +26,10 @@ app.include_router(staff_router)
 from app.web.member import router as member_router
 app.include_router(member_router)
 
+# 日別ビュー (Phase 3.5: 会員/トレーナー共用)
+from app.web.day import router as day_router
+app.include_router(day_router)
+
 line_bot_api = LineBotApi(settings.LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(settings.LINE_CHANNEL_SECRET)
 

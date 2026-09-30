@@ -333,7 +333,8 @@ def fetch_weight_series(user_id: str, days: int = 7):
             " WHERE user_id=? ORDER BY date", (user_id,)).fetchall()
     by_date = {r["date"]: dict(r) for r in rows}
 
-    end = _date.today()
+    from app.services.dates import today_jst_date
+    end = today_jst_date()
     window_start = end - timedelta(days=days - 1)
     result, last = [], None
 
@@ -360,7 +361,7 @@ def fetch_entries_for_date(user_id: str, date: str) -> List[Dict[str, Any]]:
     """指定日の食事明細を返す（AIコンテキスト注入用）."""
     with get_conn() as c:
         rows = c.execute(
-            "SELECT meal_slot, food_name, kcal, protein_g, fat_g, carb_g, salt_g"
+            "SELECT id, meal_slot, food_name, kcal, protein_g, fat_g, carb_g, salt_g"
             " FROM entries WHERE user_id=? AND date=?"
             " ORDER BY CASE meal_slot"
             "  WHEN 'breakfast' THEN 1 WHEN 'lunch' THEN 2"

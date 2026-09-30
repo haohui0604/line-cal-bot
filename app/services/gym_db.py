@@ -306,3 +306,77 @@ def get_request_for_staff(staff_id: str, membership_id: int) -> Optional[Dict[st
                 AND status='active')
         """, (membership_id, staff_id)).fetchone()
     return _d(row)
+
+
+# ---- トレーナー招待コード (Phase 3.5) ----
+
+def create_trainer_invite(gym_id: int, created_by: str, days: int = 7) -> str:
+    """トレーナー招待コードを発行 (例: TR-AB12)."""
+    import secrets
+    from datetime import datetime, timedelta, timezone
+    code = "TR-" + secrets.token_hex(2).upper()
+    exp = (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
+    with get_conn() as c:
+        c.execute(
+            "INSERT INTO trainer_invites (code, gym_id, created_by, expires_at)"
+            " VALUES (?,?,?,?)", (code, gym_id, created_by, exp))
+    return code
+
+
+def use_trainer_invite(code: str, user_id: str) -> dict:
+    """招待コードを使ってトレーナーとして登録."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    with get_conn() as c:
+        row = c.execute(
+            "SELECT * FROM trainer_invites WHERE code=?",
+            (code.upper(),)).fetchone()
+        if not row:
+            return {"result": "invalid"}
+        r = dict(row)
+        if r["used_by"]:
+            return {"result": "used"}
+        if r["expires_at"] < now:
+            return {"result": "expired"}
+        # すでにそのジムのトレーナーなら冪等で成功扱い
+        existing = c.execute(
+            "SELECT id, status FROM memberships"
+            " WHERE gym_id=? AND user_id=? AND role='trainer'",
+            (r["gym_id"], user_id)).fetchone()
+        if existing:
+            if existing["status"] == "active":
+                return {"result": "already", "gym_id": r["gym_id"]}
+            c.execute(
+                "UPDATE memberships SET status='active',"
+                " updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (existing["id"],))
+        else:
+            c.execute(
+                "INSERT INTO memberships (gym_id, user_id, role, status)"
+                " VALUES (?,?, 'trainer', 'active')",
+                (r["gym_id"], user_id))
+        c.execute(
+            "UPDATE trainer_invites SET used_by=? WHERE code=?",
+            (user_id, code.upper()))
+        return {"result": "ok", "gym_id": r["gym_id"]}
+
+
+def list_trainers(gym_id: int):
+    with get_conn() as c:
+        rows = c.execute(
+            "SELECT m.user_id, u.display_name, u.picture_url, m.status"
+            " FROM memberships m LEFT JOIN users u ON u.line_user_id=m.user_id"
+            " WHERE m.gym_id=? AND m.role='trainer' AND m.status='active'"
+            " ORDER BY m.id", (gym_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def fetch_comments_for_date(user_id: str, target_date: str):
+    """その日付宛のコメント一覧（author名つき）."""
+    with get_conn() as c:
+        rows = c.execute(
+            "SELECT cm.*, u.display_name AS author_name FROM comments cm"
+            " LEFT JOIN users u ON u.line_user_id=cm.author_id"
+            " WHERE cm.user_id=? AND cm.target_date=?"
+            " ORDER BY cm.created_at", (user_id, target_date)).fetchall()
+    return [dict(r) for r in rows]

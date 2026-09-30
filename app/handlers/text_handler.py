@@ -7,6 +7,7 @@ from app.handlers.button_builder import qr, pb
 from app.services.report_ai import build_daily_facts, generate_daily
 from app.services.db import fetch_day_meals, fetch_day_activity_total
 from datetime import date
+from app.services.dates import today_jst_date
 
 from linebot.models import TextSendMessage, FlexSendMessage
 
@@ -184,11 +185,12 @@ def _slot_jp(slot: str) -> str:
     return _SLOT_JP.get(slot, slot or "?")
 
 def _today() -> str:
-    return date.today().isoformat()
+    from app.services.dates import today_jst
+    return today_jst()  # JST基準（UTCだと0-9時が前日になるバグ修正）
 
 
 def _parse_daily_date(m):
-    today = date.today()
+    today = today_jst_date()
 
     if m.group(3):
         return today - timedelta(days=1)
@@ -211,7 +213,7 @@ def _parse_daily_date(m):
 from datetime import date, timedelta
 
 def _parse_daily_date(m):
-    today = date.today()
+    today = today_jst_date()
 
     if m.group(3):
         return today - timedelta(days=1)
@@ -236,7 +238,7 @@ def _norm_date(m):
     if m is None or len(m) < 2 or m[0] is None or m[1] is None:
         return _today()
     mo, d = int(m[0]), int(m[1])
-    today = date.today()
+    today = today_jst_date()
     y = today.year if today.month >= mo else today.year - 1
     return f"{y}-{mo:02d}-{d:02d}"
 
@@ -905,7 +907,7 @@ def handle_text(user_id: str, text: str):
             slot_jp = m.group(3)
             food_name = m.group(4)
             new_kcal = float(m.group(5))
-            today = date.today()
+            today = today_jst_date()
             y = today.year if today.month >= mo else today.year - 1
             target_date = f"{y}-{mo:02d}-{d:02d}"
             slot_en = _slot_to_english(slot_jp) if slot_jp else None
@@ -960,7 +962,7 @@ def handle_text(user_id: str, text: str):
             mo = int(m.group("mo")); d = int(m.group("d"))
             kcal = float(m.group("kcal"))
             slot_en = _slot_to_english(m.group("slot")) if m.groupdict().get("slot") else None
-            today = date.today()
+            today = today_jst_date()
             y = today.year if today.month >= mo else today.year - 1
             target_date = f"{y}-{mo:02d}-{d:02d}"
             foods = [{"name": food, "kcal": kcal,
@@ -1018,9 +1020,9 @@ def _detect_ref_date(text: str) -> str:
     if m:
         return _norm_date((m.group(1), m.group(2)))
     if "おととい" in text or "一昨日" in text:
-        return (date.today() - timedelta(days=2)).isoformat()
+        return (today_jst_date() - timedelta(days=2)).isoformat()
     if "昨日" in text or "きのう" in text:
-        return (date.today() - timedelta(days=1)).isoformat()
+        return (today_jst_date() - timedelta(days=1)).isoformat()
     return None
 
 

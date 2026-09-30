@@ -4,6 +4,7 @@
 {% block content %}
 <p><a href="/trainer" class="muted">← 会員一覧に戻る</a></p>
 <h2>{{ member_name }}</h2>
+<p><a class="btn" href="/day?member_id={{ member_id }}">📅 日別ビュー（記録の追加・修正・削除 / 日単位コメント）</a></p>
 
 <div class="grid2">
   <div class="card">
@@ -24,6 +25,10 @@
 <div class="card">
   <b>📈 カロリー推移（14日）</b>
   <canvas id="calChart" height="110"></canvas>
+</div>
+<div class="card">
+  <b>🥧 PFCバランス推移（14日・%）</b>
+  <canvas id="pfcChart" height="100"></canvas>
 </div>
 <div class="card">
   <b>⚖️ 体重推移（14日）</b>
@@ -89,6 +94,17 @@
         backgroundColor: "#f59e0b66", borderColor: "#f59e0b", borderWidth: 1 }
     ]},
     options: { responsive: true, interaction: { mode: "index" } }
+  });
+  new Chart(document.getElementById("pfcChart"), {
+    type: "bar",
+    data: { labels: d.labels, datasets: [
+      { label: "P", data: d.pfc_p, backgroundColor: "#06c755" },
+      { label: "F", data: d.pfc_f, backgroundColor: "#f59e0b" },
+      { label: "C", data: d.pfc_c, backgroundColor: "#3b82f6" }
+    ]},
+    options: { responsive: true, scales: {
+      x: { stacked: true }, y: { stacked: true, max: 100,
+        ticks: { callback: v => v + "%" } } } }
   });
   new Chart(document.getElementById("weightChart"), {
     type: "line",

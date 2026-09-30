@@ -20,6 +20,8 @@ from app.services.db import (
     fetch_day_summary, fetch_recent_entries, fetch_weight_series,
 )
 from app.services import gym_db
+from app.services.dates import today_jst_date
+from app.services.day_view import pfc_percent_series
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -59,20 +61,22 @@ def me_summary(body: TokenIn):
     """自分のカロリー推移・体重推移（グラフ用JSON）."""
     uid = _verify_uid(body.id_token)
     days = max(1, min(body.days, 90))
-    labels, intake, burn = [], [], []
-    today = date.today()
+    labels, intake, burn, pfc = [], [], [], []
+    today = today_jst_date()
     for i in range(days - 1, -1, -1):
         d = (today - timedelta(days=i)).isoformat()
         s = fetch_day_summary(uid, d)
         labels.append(d[5:])
         intake.append(s.get("intake_kcal") or 0)
         burn.append(s.get("burn_kcal") or s.get("burn") or 0)
+        pfc.append((s.get("protein_g"), s.get("fat_g"), s.get("carb_g")))
     wseries = fetch_weight_series(uid, days=days) or []
     return {
         "labels": labels, "intake": intake, "burn": burn,
         "weight_labels": [(w.get("date") or "")[5:] for w in wseries],
         "weight": [w.get("weight_kg") for w in wseries],
         "today": fetch_day_summary(uid, today.isoformat()),
+        **pfc_percent_series(pfc),
     }
 
 
@@ -88,3 +92,12 @@ def me_comments(body: TokenIn):
     """自分宛のコメント（トレーナー / AIコーチ）."""
     uid = _verify_uid(body.id_token)
     return {"comments": gym_db.fetch_comments_for_user(uid, limit=30)}
+
+
+@router.get("/me/day", response_class=HTMLResponse)
+def member_day_page():
+    """会員の日別ビュー。/me のサブパスに置くことでLIFFのエンドポイント配下とする."""
+    return templates.TemplateResponse("day_detail.html", {
+        "request": {}, "member_id": None, "can_comment": False,
+        "liff_id": settings.LIFF_ID, "initial_date": "",
+    })

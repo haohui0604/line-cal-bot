@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>日別記録</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+{% if not member_id %}
+<script>
+function loadLiffSdk(){return new Promise((res,rej)=>{const s=document.createElement("script");s.src="https://static.line-scdn.net/liff/edge/2/sdk.js";s.onload=res;s.onerror=()=>rej(new Error("SDK failed"));document.head.appendChild(s);});}
+</script>
+{% endif %}
+<style>
+  :root{ --bg:#f6f7f9; --card:#fff; --line:#e5e7eb; --text:#1f2937;
+         --muted:#6b7280; --accent:#06c755; }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font-family:-apple-system,"Hiragino Kaku Gothic ProN",Meiryo,sans-serif}
+  main{max-width:640px;margin:0 auto;padding:16px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;
+        padding:16px;margin-bottom:14px}
+  .nav{display:flex;align-items:center;justify-content:space-between;
+       margin-bottom:14px}
+  .nav button{background:#fff;border:1px solid var(--line);border-radius:8px;
+              padding:10px 18px;font-size:16px;cursor:pointer}
+  .nav h2{margin:0;font-size:18px}
+  .stat{font-size:22px;font-weight:700}
+  .muted{color:var(--muted);font-size:13px}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{padding:8px 6px;border-bottom:1px solid var(--line);text-align:left}
+  .slot-head{background:#f3f4f6;font-weight:700}
+  .btn{display:inline-block;background:var(--accent);color:#fff;border:none;
+       border-radius:8px;padding:8px 16px;font-size:14px;cursor:pointer}
+  .btn-ghost{background:#fff;color:var(--text);border:1px solid var(--line)}
+  .btn-sm{padding:4px 10px;font-size:12px}
+  input,select,textarea{border:1px solid var(--line);border-radius:8px;
+       padding:8px;font-size:14px;width:100%;font-family:inherit}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .ai{background:#f0fdf4;border:1px solid #bbf7d0}
+  .badge{display:inline-block;background:#fef3c7;color:#92400e;
+         border-radius:999px;padding:2px 10px;font-size:12px}
+  .badge-green{background:#dcfce7;color:#166534}
+  #err{display:none;background:#fee2e2;color:#991b1b;padding:12px;
+       border-radius:8px;margin-bottom:14px;white-space:pre-wrap}
+  .loading{text-align:center;color:var(--muted);padding:40px 0}
+  details{margin-top:6px}
+  details summary{cursor:pointer;color:var(--accent);font-size:14px}
+  .editrow input{margin:2px 0}
+</style>
+</head>
+<body>
+<main>
+  <div id="err"></div>
+  <div class="nav">
+    <button id="prevBtn">◀ 前日</button>
+    <h2 id="dateLabel">--</h2>
+    <button id="nextBtn">翌日 ▶</button>
+  </div>
+  <div class="muted" style="text-align:center;margin-bottom:10px">
+    <input type="date" id="datePicker" style="width:auto">
+  </div>
+
+  <div id="loading" class="loading">読み込み中…</div>
+  <div id="app" style="display:none">
+
+    <div class="card">
+      <div class="muted">収支</div>
+      <div class="stat"><span id="dIntake">0</span> kcal 摂取
+        <span class="muted">/</span> <span id="dBurn">0</span> kcal 消費</div>
+      <div class="muted">目標: <span id="dGoal">—</span> ・
+        P <span id="dP">0</span>g F <span id="dF">0</span>g C <span id="dC">0</span>g
+        <span id="dWeight"></span></div>
+    </div>
+
+    <div class="card ai">
+      <b>🤖 AIコーチ</b>
+      <div id="aiComment" style="margin-top:6px;white-space:pre-wrap">…</div>
+    </div>
+
+    <div class="card">
+      <b>🥧 栄養バランス</b>
+      <div class="grid" style="margin-top:8px">
+        <canvas id="pieChart" height="160"></canvas>
+        <canvas id="slotChart" height="160"></canvas>
+      </div>
+    </div>
+
+    <div class="card">
+      <b>🍽 記録</b>
+      <div id="entriesArea"></div>
+      <details>
+        <summary>＋ 記録を手動追加</summary>
+        <div class="grid" style="margin-top:8px">
+          <select id="addSlot">
+            <option value="breakfast">朝食</option>
+            <option value="lunch" selected>昼食</option>
+            <option value="dinner">夕食</option>
+            <option value="snack">間食</option>
+          </select>
+          <input id="addName" placeholder="食品名（例: 鶏むね）">
+          <input id="addKcal" type="number" placeholder="kcal（必須）">
+          <input id="addP" type="number" step="0.1" placeholder="P g（空欄でAI推定）">
+          <input id="addF" type="number" step="0.1" placeholder="F g">
+          <input id="addC" type="number" step="0.1" placeholder="C g">
+        </div>
+        <button class="btn" style="margin-top:8px" onclick="addEntry()">追加</button>
+        <div class="muted">※ PFCを空欄にするとAIが推定します</div>
+      </details>
+    </div>
+
+    <div class="card">
+      <b>💬 トレーナーコメント</b>
+      <div id="trainerComments"></div>
+      {% if member_id %}
+      <textarea id="commentBody" placeholder="この日の記録へのコメント"></textarea>
+      <label class="muted" style="display:block;margin:6px 0">
+        <input type="checkbox" id="commentDirective" style="width:auto">
+        ⭐ AIコーチの今後の指導に反映する
+      </label>
+      <button class="btn" onclick="postComment()">送信（会員のLINEに通知）</button>
+      {% endif %}
+    </div>
+  </div>
+</main>
+
+<script>
+const MEMBER_ID = {{ member_id | tojson }};
+const CAN_COMMENT = {{ can_comment | tojson }};
+const LIFF_ID = {{ liff_id | tojson }};
+let idToken = null;
+let curDate = {{ initial_date | tojson }} || null;
+let pieChart = null, slotChart = null;
+const SLOT_JP = {breakfast:"朝食",lunch:"昼食",dinner:"夕食",snack:"間食",night:"夜食"};
+
+function showErr(m){const e=document.getElementById("err");e.textContent=m;e.style.display="block";
+  document.getElementById("loading").style.display="none";}
+function fmt(v){return Math.round(v||0);}
+
+function apiBody(extra){
+  const b = Object.assign({}, extra || {});
+  if (MEMBER_ID) b.member_id = MEMBER_ID; else b.id_token = idToken;
+  return b;
+}
+async function api(path, extra){
+  const res = await fetch(path, {method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify(apiBody(extra))});
+  if(!res.ok){let d="";try{d=(await res.json()).detail||"";}catch(_){}
+    throw new Error(res.status+" "+d);}
+  return res.json();
+}
+
+function dateStr(d){return d.toISOString().slice(0,10);}
+function shift(days){
+  const d = new Date(curDate + "T00:00:00+09:00");
+  d.setDate(d.getDate() + days);
+  load(dateStr(d));
+}
+
+async function load(dateStr_){
+  if(dateStr_) curDate = dateStr_;
+  document.getElementById("loading").style.display="block";
+  document.getElementById("app").style.display="none";
+  const d = await api("/api/day/data", {date: curDate});
+  render(d);
+  document.getElementById("loading").style.display="none";
+  document.getElementById("app").style.display="block";
+}
+
+function render(d){
+  document.getElementById("dateLabel").textContent = d.date;
+  document.getElementById("datePicker").value = d.date;
+  document.getElementById("dIntake").textContent = fmt(d.intake_kcal);
+  document.getElementById("dBurn").textContent = fmt(d.burn_kcal);
+  document.getElementById("dGoal").textContent = d.target_kcal ? fmt(d.target_kcal)+" kcal" : "未設定";
+  document.getElementById("dP").textContent = fmt(d.protein_g);
+  document.getElementById("dF").textContent = fmt(d.fat_g);
+  document.getElementById("dC").textContent = fmt(d.carb_g);
+  document.getElementById("dWeight").textContent = d.weight_kg ? ("・ 体重 "+d.weight_kg+"kg") : "";
+  document.getElementById("aiComment").textContent =
+    (d.ai_comment && d.ai_comment.comment) || "コメントを生成できませんでした";
+
+  // PFC円グラフ
+  const pk=(d.protein_g||0)*4, fk=(d.fat_g||0)*9, ck=(d.carb_g||0)*4;
+  if(pieChart) pieChart.destroy();
+  pieChart = new Chart(document.getElementById("pieChart"), {
+    type:"doughnut",
+    data:{labels:["タンパク質","脂質","炭水化物"],
+      datasets:[{data:[pk,fk,ck],
+        backgroundColor:["#06c755","#f59e0b","#3b82f6"]}]},
+    options:{plugins:{legend:{position:"bottom"}},
+      cutout:"55%"}
+  });
+
+  // 区分別摂取
+  const order=["breakfast","lunch","dinner","snack","night"];
+  const slotLabels=[], slotVals=[];
+  for(const s of order){ if(d.slots && d.slots[s]){ slotLabels.push(SLOT_JP[s]); slotVals.push(d.slots[s].kcal);} }
+  if(slotChart) slotChart.destroy();
+  slotChart = new Chart(document.getElementById("slotChart"), {
+    type:"bar",
+    data:{labels:slotLabels, datasets:[{data:slotVals, backgroundColor:"#06c75588"}]},
+    options:{plugins:{legend:{display:false}}, indexAxis:"y",
+      scales:{x:{title:{display:true,text:"kcal"}}}}
+  });
+
+  // 記録一覧（区分ごと）
+  const area = document.getElementById("entriesArea");
+  if(!d.entries.length){ area.innerHTML='<p class="muted">この日の記録はありません。</p>'; }
+  else {
+    let html="";
+    for(const s of order){
+      const g = d.slots[s]; if(!g) continue;
+      html += '<div class="slot-head" style="padding:6px 8px;margin-top:8px">'
+        + SLOT_JP[s] + ' <span class="muted">'+fmt(g.kcal)+' kcal</span></div><table>';
+      for(const e of g.foods){
+        html += "<tr><td></td><td>"+fmt(e.kcal)+" kcal</td>"
+          + '<td class="muted">P'+fmt(e.protein_g)+" F"+fmt(e.fat_g)+" C"+fmt(e.carb_g)+"</td>"
+          + '<td style="width:96px">'
+          + '<button class="btn btn-ghost btn-sm" onclick="startEdit(this,'+e.id+')">修正</button> '
+          + '<button class="btn btn-ghost btn-sm" onclick="delEntry('+e.id+')">削除</button>'
+          + "</td></tr>";
+      }
+      html += "</table>";
+    }
+    area.innerHTML = html;
+    // 食品名はテキストとして安全に挿入
+    const rows = area.querySelectorAll("tr");
+    let i=0;
+    for(const s of order){ const g=d.slots[s]; if(!g) continue;
+      for(const e of g.foods){ rows[i].children[0].textContent = e.food_name; i++; } }
+  }
+
+  // トレーナーコメント
+  const tc = document.getElementById("trainerComments");
+  const list = d.trainer_comments || [];
+  tc.innerHTML = list.length ? "" : '<p class="muted">まだコメントはありません。</p>';
+  for(const cm of list){
+    const div=document.createElement("div");
+    div.style.cssText="border-bottom:1px solid var(--line);padding:8px 0";
+    const badge = cm.author_type==="trainer" ? '<span class="badge">トレーナー</span>' : '<span class="badge badge-green">AI</span>';
+    div.innerHTML = badge + (cm.is_directive?' <span class="badge badge-green">⭐方針</span>':'')
+      + ' <span class="muted">'+(cm.author_name||"")+" "+(cm.created_at||"")+'</span><div style="white-space:pre-wrap;margin-top:4px"></div>';
+    div.querySelector("div").textContent = cm.body;
+    tc.appendChild(div);
+  }
+}
+
+async function addEntry(){
+  const body = {
+    action:"add", date: curDate,
+    meal_slot: document.getElementById("addSlot").value,
+    food_name: document.getElementById("addName").value.trim(),
+    kcal: parseFloat(document.getElementById("addKcal").value),
+  };
+  const num = id => { const v=document.getElementById(id).value; return v===""?null:parseFloat(v); };
+  body.protein_g=num("addP"); body.fat_g=num("addF"); body.carb_g=num("addC");
+  if(!body.food_name || isNaN(body.kcal)){ showErr("食品名とkcalは必須です"); return; }
+  try{ await api("/api/day/entries", body); load(); }
+  catch(e){ showErr("追加に失敗: "+e.message); }
+}
+
+async function delEntry(id){
+  if(!confirm("この記録を削除しますか？")) return;
+  try{ await api("/api/day/entries", {action:"delete", entry_id:id}); load(); }
+  catch(e){ showErr("削除に失敗: "+e.message); }
+}
+
+function startEdit(btn, id){
+  const tr = btn.closest("tr");
+  const name = tr.children[0].textContent;
+  const kcal = parseFloat(tr.children[1].textContent);
+  tr.innerHTML = '<td colspan="4" class="editrow">'
+    + '<input id="e_name" value="">'
+    + '<div class="grid"><input id="e_kcal" type="number" placeholder="kcal">'
+    + '<input id="e_p" type="number" step="0.1" placeholder="P g">'
+    + '<input id="e_f" type="number" step="0.1" placeholder="F g">'
+    + '<input id="e_c" type="number" step="0.1" placeholder="C g"></div>'
+    + '<button class="btn btn-sm" onclick="saveEdit('+id+')">保存</button> '
+    + '<button class="btn btn-ghost btn-sm" onclick="load()">取消</button></td>';
+  document.getElementById("e_name").value = name;
+  document.getElementById("e_kcal").value = kcal;
+}
+
+async function saveEdit(id){
+  const num = i=>{const v=document.getElementById(i).value;return v===""?null:parseFloat(v);};
+  try{
+    await api("/api/day/entries", {action:"edit", entry_id:id,
+      meal_slot:"lunch",   // 区分変更は省略（簡易実装）
+      food_name: document.getElementById("e_name").value.trim(),
+      kcal: num("e_kcal"), protein_g:num("e_p"), fat_g:num("e_f"), carb_g:num("e_c")});
+    load();
+  }catch(e){ showErr("保存に失敗: "+e.message); }
+}
+
+{% if member_id %}
+async function postComment(){
+  const body = document.getElementById("commentBody").value.trim();
+  if(!body) return;
+  try{
+    await api("/api/day/comment", {date: curDate, body: body,
+      is_directive: document.getElementById("commentDirective").checked});
+    document.getElementById("commentBody").value="";
+    document.getElementById("commentDirective").checked=false;
+    load();
+  }catch(e){ showErr("送信に失敗: "+e.message); }
+}
+{% endif %}
+
+document.getElementById("prevBtn").onclick = () => shift(-1);
+document.getElementById("nextBtn").onclick = () => shift(1);
+document.getElementById("datePicker").onchange = e => load(e.target.value);
+
+(async () => {
+  {% if not member_id %}
+  try{ await loadLiffSdk(); await liff.init({liffId: LIFF_ID});
+    if(!liff.isLoggedIn()){ liff.login(); return; }
+    idToken = liff.getIDToken();
+  }catch(e){ showErr("LIFF初期化に失敗: "+(e&&e.message?e.message:e)); return; }
+  {% endif %}
+  try{ await load(curDate); }
+  catch(e){ showErr("読み込みに失敗: "+(e&&e.message?e.message:e)); }
+})();
+</script>
+</body>
+</html>

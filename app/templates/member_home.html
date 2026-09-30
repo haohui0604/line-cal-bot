@@ -62,6 +62,12 @@ function loadLiffSdk(){
         ・ C <span id="tC">0</span>g</div>
     </div>
 
+    <div class="card" style="text-align:center">
+      <a href="/me/day" style="display:inline-block;background:var(--accent);color:#fff;
+         text-decoration:none;border-radius:8px;padding:12px 20px;font-weight:700">
+         📅 日別の詳細を見る（記録の編集・コメント）</a>
+    </div>
+
     <div class="card">
       <b>📈 カロリー推移（14日）</b>
       <canvas id="calChart" height="160"></canvas>
@@ -69,6 +75,11 @@ function loadLiffSdk(){
     <div class="card">
       <b>⚖️ 体重推移（14日）</b>
       <canvas id="weightChart" height="130"></canvas>
+    </div>
+
+    <div class="card">
+      <b>🥧 PFCバランス推移（14日・%）</b>
+      <canvas id="pfcChart" height="140"></canvas>
     </div>
 
     <div class="tabs">
@@ -154,6 +165,17 @@ async function main(){
         tension:.3, pointRadius:2, spanGaps:true }
     ]},
     options:{ responsive:true }
+  });
+
+  new Chart(document.getElementById("pfcChart"), {
+    type:"bar",
+    data:{ labels:s.labels, datasets:[
+      { label:"P", data:s.pfc_p, backgroundColor:"#06c755" },
+      { label:"F", data:s.pfc_f, backgroundColor:"#f59e0b" },
+      { label:"C", data:s.pfc_c, backgroundColor:"#3b82f6" }
+    ]},
+    options:{ responsive:true, scales:{
+      x:{stacked:true}, y:{stacked:true, max:100, ticks:{callback:v=>v+"%"}} } }
   });
 
   // コメント

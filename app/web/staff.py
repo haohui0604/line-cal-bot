@@ -19,6 +19,8 @@ from app.services.db import (
     fetch_day_summary, fetch_recent_entries, fetch_weight_series,
 )
 from app.services import gym_db
+from app.services.dates import today_jst_date
+from app.services.day_view import pfc_percent_series
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -64,7 +66,7 @@ def _push_to_member(member_id: str, text: str) -> None:
 @router.get("/trainer", response_class=HTMLResponse)
 def trainer_home(request: Request):
     staff_id = _require_staff(request)
-    today = date.today().isoformat()
+    today = today_jst_date().isoformat()
     rows = []
     for m in gym_db.list_members_for_staff(staff_id):
         latest = fetch_recent_entries(m["user_id"], limit=1)
@@ -122,7 +124,7 @@ def member_detail(request: Request, member_id: str):
     staff_id = _require_staff(request)
     _require_member_access(staff_id, member_id)
     u = gym_db.get_user(member_id) or {}
-    today = date.today().isoformat()
+    today = today_jst_date().isoformat()
     return templates.TemplateResponse("staff_member_detail.html", {
         "request": request,
         "member_id": member_id,
@@ -144,7 +146,7 @@ def post_comment(request: Request, member_id: str,
         directive = (is_directive == "on")
         gym_db.add_comment(
             user_id=member_id, body=body, author_type="trainer",
-            author_id=staff_id, target_date=date.today().isoformat(),
+            author_id=staff_id, target_date=today_jst_date().isoformat(),
             is_directive=directive)
         staff = gym_db.get_user(staff_id) or {}
         text = (f"💬 {staff.get('display_name') or 'トレーナー'}"
@@ -162,17 +164,19 @@ def member_summary_api(request: Request, member_id: str, days: int = 14):
     staff_id = _require_staff(request)
     _require_member_access(staff_id, member_id)
     days = max(1, min(days, 90))
-    labels, intake, burn = [], [], []
-    today = date.today()
+    labels, intake, burn, pfc = [], [], [], []
+    today = today_jst_date()
     for i in range(days - 1, -1, -1):
         d = (today - timedelta(days=i)).isoformat()
         s = fetch_day_summary(member_id, d)
         labels.append(d[5:])  # MM-DD
         intake.append(s.get("intake_kcal") or 0)
         burn.append(s.get("burn_kcal") or s.get("burn") or 0)
+        pfc.append((s.get("protein_g"), s.get("fat_g"), s.get("carb_g")))
     wseries = fetch_weight_series(member_id, days=days) or []
     return {
         "labels": labels, "intake": intake, "burn": burn,
         "weight_labels": [(w.get("date") or "")[5:] for w in wseries],
         "weight": [w.get("weight_kg") for w in wseries],
+        **pfc_percent_series(pfc),
     }

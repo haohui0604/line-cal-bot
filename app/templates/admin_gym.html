@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ジム管理</title>
+<style>
+ body{font-family:-apple-system,"Hiragino Kaku Gothic ProN",Meiryo,sans-serif;
+      background:#f6f7f9;margin:0}
+ main{max-width:640px;margin:40px auto;padding:16px}
+ .card{background:#fff;border:1px solid #e5e7eb;border-radius:12px;
+       padding:20px;margin-bottom:14px}
+ button{background:#06c755;color:#fff;border:none;border-radius:8px;
+        padding:10px 18px;font-size:14px;cursor:pointer}
+ .code{font-size:22px;font-weight:700;letter-spacing:1px;margin-top:10px}
+ .muted{color:#6b7280;font-size:13px}
+</style>
+</head>
+<body>
+<main>
+<h2>🏋️ ジム管理</h2>
+{% for g in gyms %}
+<div class="card">
+  <b>{{ g.gym_name }}</b>
+  <div class="muted" style="margin:6px 0">gym_id: {{ g.gym_id }}</div>
+  <button onclick="invite({{ g.gym_id }}, this)">トレーナー招待コードを発行</button>
+  <div class="code" id="code-{{ g.gym_id }}"></div>
+  <div class="muted">発行したコードをトレーナーに伝え、
+    Webログイン後に入力してもらってください（有効期限7日・1回限り）</div>
+</div>
+{% endfor %}
+</main>
+<script>
+async function invite(gymId, btn){
+  const res = await fetch("/api/admin/gym/invite", {method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({gym_id: gymId})});
+  if(res.ok){
+    const d = await res.json();
+    document.getElementById("code-"+gymId).textContent = d.code;
+    btn.disabled = true;
+  } else {
+    alert("発行に失敗しました");
+  }
+}
+</script>
+</body></html>

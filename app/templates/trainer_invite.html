@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>トレーナー招待</title>
+<style>
+ body{font-family:-apple-system,"Hiragino Kaku Gothic ProN",Meiryo,sans-serif;
+      background:#f6f7f9;margin:0}
+ main{max-width:480px;margin:60px auto;padding:16px}
+ .card{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:24px}
+ input{width:100%;box-sizing:border-box;border:1px solid #e5e7eb;border-radius:8px;
+       padding:12px;font-size:16px;margin-bottom:12px}
+ button{width:100%;background:#06c755;color:#fff;border:none;border-radius:8px;
+        padding:12px;font-size:16px;cursor:pointer}
+ .msg{margin-top:12px;font-size:14px}
+ .err{color:#991b1b}
+ .ok{color:#166534}
+</style>
+</head>
+<body>
+<main><div class="card">
+<h2>トレーナー登録</h2>
+<p>ジムから案内された招待コード（例: TR-AB12）を入力してください。</p>
+<input id="code" placeholder="TR-XXXX">
+<button onclick="reg()">登録する</button>
+<div id="msg" class="msg"></div>
+</div></main>
+<script>
+async function reg(){
+  const m = document.getElementById("msg");
+  const res = await fetch("/api/trainer-invite", {method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({code: document.getElementById("code").value})});
+  if(res.ok){
+    m.className="msg ok";
+    m.textContent="登録しました！担当会員画面へ移動します。";
+    setTimeout(()=>location.href="/trainer", 1500);
+  } else {
+    let d=""; try{ d=(await res.json()).detail||""; }catch(_){}
+    m.className="msg err"; m.textContent = "登録に失敗しました: "+d;
+  }
+}
+</script>
+</body></html>

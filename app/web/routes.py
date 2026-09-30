@@ -11,14 +11,20 @@ import logging
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
+from fastapi.templating import Jinja2Templates
+from pathlib import Path
 
 from app import auth
+from app.services import gym_db
 from app.services.gym_db import (
     upsert_user, get_membership_for_user, is_staff,
 )
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+templates = Jinja2Templates(
+    directory=str(Path(__file__).resolve().parent.parent / "templates")
+)
 
 # OAuth state の簡易保持（無料枠=単一プロセス前提。再起動で消えるが許容）
 _pending_states: set = set()
@@ -101,3 +107,62 @@ def api_me(request: Request):
     if not uid:
         raise HTTPException(status_code=401, detail="未ログインです")
     return {"line_user_id": uid, "membership": get_membership_for_user(uid)}
+
+
+# ---- トレーナー招待 (Phase 3.5: コード方式) ----
+
+@router.get("/trainer-invite", response_class=__import__("fastapi.responses", fromlist=["HTMLResponse"]).HTMLResponse)
+def trainer_invite_page(request: Request):
+    uid = auth.current_user_id(request)
+    if not uid:
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse("/login")
+    return templates.TemplateResponse("trainer_invite.html", {"request": request})
+
+
+@router.post("/api/trainer-invite")
+def trainer_invite_use(request: Request, body: dict):
+    uid = auth.current_user_id(request)
+    if not uid:
+        raise HTTPException(status_code=401, detail="ログインが必要です")
+    code = (body.get("code") or "").strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="コードを入力してください")
+    res = gym_db.use_trainer_invite(code, uid)
+    if res["result"] == "invalid":
+        raise HTTPException(status_code=404, detail="コードが無効です")
+    if res["result"] == "used":
+        raise HTTPException(status_code=409, detail="このコードは使用済みです")
+    if res["result"] == "expired":
+        raise HTTPException(status_code=410, detail="コードの有効期限切れです")
+    return res
+
+
+# ---- ジム管理（オーナー）: 招待コード発行 ----
+
+@router.get("/admin/gym", response_class=__import__("fastapi.responses", fromlist=["HTMLResponse"]).HTMLResponse)
+def admin_gym(request: Request):
+    uid = auth.current_user_id(request)
+    if not uid:
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse("/login")
+    admin_ms = [m for m in gym_db.get_staff_memberships(uid) if m["role"] == "gym_admin"]
+    if not admin_ms:
+        raise HTTPException(status_code=403, detail="ジム管理者権限がありません")
+    return templates.TemplateResponse("admin_gym.html", {
+        "request": request, "gyms": admin_ms,
+    })
+
+
+@router.post("/api/admin/gym/invite")
+def admin_gym_invite(request: Request, body: dict):
+    uid = auth.current_user_id(request)
+    if not uid:
+        raise HTTPException(status_code=401, detail="ログインが必要です")
+    gym_id = int(body.get("gym_id") or 0)
+    admin = [m for m in gym_db.get_staff_memberships(uid)
+             if m["role"] == "gym_admin" and m["gym_id"] == gym_id]
+    if not admin:
+        raise HTTPException(status_code=403, detail="このジムの管理者ではありません")
+    code = gym_db.create_trainer_invite(gym_id, uid)
+    return {"code": code}

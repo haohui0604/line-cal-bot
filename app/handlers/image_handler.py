@@ -7,6 +7,7 @@ mode ごとの分岐:
 - mode=activity (消費kcal): confidence=confirmed → 即時DB保存 (activity)
 """
 import json
+from app.services.dates import today_jst
 import logging
 import re
 from datetime import date
@@ -53,7 +54,7 @@ def handle_image(user_id: str, message_id: str, line_bot_api):
                 "撮影した画面にKgの数字がはっきり映っている画像を送ってください"
             ))
         save_weight(
-            user_id=user_id, date=date.today().isoformat(),
+            user_id=user_id, date=today_jst(),
             weight_kg=float(weight_kg), is_measured=1,
             body_fat_pct=data.get("body_fat_pct"),
             muscle_kg=data.get("muscle_kg"),
@@ -77,7 +78,7 @@ def handle_image(user_id: str, message_id: str, line_bot_api):
         if total is None:
             total = float(active)
         save_activity(
-            user_id=user_id, date=date.today().isoformat(),
+            user_id=user_id, date=today_jst(),
             total_kcal=float(total),
             active_kcal=float(active) if active else None,
             resting_kcal=float(resting) if resting else None,
@@ -98,7 +99,7 @@ def handle_image(user_id: str, message_id: str, line_bot_api):
     if mode == "label":
         save_entry(
             user_id=user_id,
-            date=date.today().isoformat(),
+            date=today_jst(),
             meal_slot="snack",
             food_name=data.get("name") or data.get("brand") or "未名",
             kcal=float(data.get("kcal") or 0),
@@ -126,7 +127,7 @@ def handle_image(user_id: str, message_id: str, line_bot_api):
         "quantity_g": data.get("quantity_g"),
     }]
     _pending[user_id] = {"foods": foods, "meal_slot": "snack",
-                         "date": date.today().isoformat()}
+                         "date": today_jst()}
 
     reaction = (data.get("reaction") or "").strip()
     lines = []
