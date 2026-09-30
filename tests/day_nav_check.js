@@ -59,6 +59,11 @@ console.log(`旧実装 翌日 = ${bNext} (正しくは 2026-09-29)`);
 assert.strictEqual(bPrev, "2026-09-26", "旧実装の再現が変わりました");
 assert.strictEqual(bNext, "2026-09-28", "旧実装の再現が変わりました");
 
+// 前日（初期表示用）が今日の1日前であること
+assert.strictEqual(DayNav.shiftDate(DayNav.todayLocal(), -1),
+  DayNav.yesterdayLocal(), "yesterdayLocal が今日の1日前になっていません");
+console.log(`yesterdayLocal() = ${DayNav.yesterdayLocal()} (today=${DayNav.todayLocal()})  OK`);
+
 // TZ 非依存
 console.log(`TZ=${process.env.TZ || "(未設定)"} でも同じ結果  OK`);
 console.log("day_nav: all assertions passed");

@@ -21,6 +21,7 @@ from app.services.db import (
 )
 from app.services import gym_db
 from app.services.dates import today_jst_date
+from app.services import dates as jst_dates
 from app.services.day_view import pfc_percent_series
 
 logger = logging.getLogger(__name__)
@@ -94,11 +95,19 @@ def me_comments(body: TokenIn):
     return {"comments": gym_db.fetch_comments_for_user(uid, limit=30)}
 
 
+@router.post("/api/me/role")
+def me_role(body: TokenIn):
+    """ログイン中の会員がスタッフ(トレーナー/管理者)かどうかを返す."""
+    uid = _verify_uid(body.id_token)
+    return {"is_staff": gym_db.is_staff(uid)}
+
+
 @router.get("/me/day", response_class=HTMLResponse)
 def member_day_page():
     """会員の日別ビュー。/me のサブパスに置くことでLIFFのエンドポイント配下とする."""
     return templates.TemplateResponse("day_detail.html", {
         "request": {}, "member_id": None, "can_comment": False,
         "can_edit": True,
-        "liff_id": settings.LIFF_ID, "initial_date": "",
+        "liff_id": settings.LIFF_ID,
+        "initial_date": jst_dates.yesterday_jst(),
     })

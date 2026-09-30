@@ -27,7 +27,10 @@ function loadLiffSdk(){
   body{margin:0;background:var(--bg);color:var(--text);
        font-family:-apple-system,"Hiragino Kaku Gothic ProN",Meiryo,sans-serif}
   header{background:var(--card);border-bottom:1px solid var(--line);
-         padding:14px 16px;font-weight:700}
+         padding:14px 16px;font-weight:700;display:flex;align-items:center;
+         justify-content:space-between}
+  header .trainer-link{font-weight:400;font-size:13px;display:none}
+  header .trainer-link a{color:var(--accent);text-decoration:none}
   main{max-width:640px;margin:0 auto;padding:16px}
   .card{background:var(--card);border:1px solid var(--line);border-radius:12px;
         padding:16px;margin-bottom:14px}
@@ -48,7 +51,10 @@ function loadLiffSdk(){
 </style>
 </head>
 <body>
-<header>📊 マイ記録</header>
+<header>📊 マイ記録
+  <span class="trainer-link" id="trainerLink">
+    <a href="/trainer">🧑‍🏫 トレーナー画面</a></span>
+</header>
 <main>
   <div id="err"></div>
   <div id="loading" class="loading">読み込み中…</div>
@@ -225,6 +231,18 @@ async function main(){
   // タブ切替
   document.getElementById("tabComments").onclick = () => switchTab(true);
   document.getElementById("tabHistory").onclick = () => switchTab(false);
+
+  // スタッフ権限があればヘッダーに「トレーナー画面」への導線を出す
+  async function checkTrainer(){
+    try{
+      const r = await fetch("/api/me/role", {method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({id_token: idToken})});
+      if(r.ok){ const d = await r.json();
+        if(d.is_staff) document.getElementById("trainerLink").style.display="inline"; }
+    }catch(_){}
+  }
+  checkTrainer();
 }
 function switchTab(showComments){
   document.getElementById("paneComments").style.display = showComments ? "" : "none";

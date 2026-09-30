@@ -14,9 +14,9 @@
 <table>
   <tr><th></th><th>会員</th><th>ジム</th><th>今日の摂取</th><th>最終記録</th></tr>
   {% for m in members %}
-  <tr onclick="location.href='/day?member_id={{ m.user_id }}'" style="cursor:pointer">
+  <tr onclick="location.href='/trainer/members/{{ m.user_id }}'" style="cursor:pointer">
     <td style="width:44px">{% if m.picture_url %}<img class="avatar" src="{{ m.picture_url }}" alt="">{% endif %}</td>
-    <td><a href="/day?member_id={{ m.user_id }}">{{ m.display_name or m.user_id }}</a></td>
+    <td><a href="/trainer/members/{{ m.user_id }}">{{ m.display_name or m.user_id }}</a></td>
     <td class="muted">{{ m.gym_name }}</td>
     <td>{{ "%.0f"|format(m.today_kcal) }} kcal</td>
     <td class="muted">{{ m.last_record_date or "—" }}</td>
@@ -24,7 +24,7 @@
   {% endfor %}
 </table>
 </div>
-<p class="muted">クリックするとその会員の「日別記録」（グラフ・記録編集・コメント）を開きます。
-  従来の詳細画面は <a href="/trainer/members/{{ members[0].user_id }}">こちら</a> の形式で残っています。</p>
+<p class="muted">クリックするとその会員の「推移画面」（今日の収支・14日グラフ・コメント）を開き、
+  そこから日別画面へ進めます。</p>
 {% endif %}
 {% endblock %}

@@ -166,7 +166,7 @@ const CAN_COMMENT = {{ can_comment | tojson }};
 const CAN_EDIT = {{ can_edit | tojson }};
 const LIFF_ID = {{ liff_id | tojson }};
 let idToken = null;
-let curDate = {{ initial_date | tojson }} || null;   // null なら今日を表示
+let curDate = {{ initial_date | tojson }} || null;   // サーバーが前日(JST)を既定で渡す
 let pieChart = null, slotChart = null;
 const SLOT_JP = {breakfast:"朝食",lunch:"昼食",dinner:"夕食",snack:"間食",night:"夜食"};
 const SLOT_ORDER = ["breakfast","lunch","dinner","snack","night"];
@@ -373,7 +373,7 @@ document.getElementById("datePicker").onchange = e => load(e.target.value);
     idToken = liff.getIDToken();
   }catch(e){ showErr("LIFF初期化に失敗: "+(e&&e.message?e.message:e)); return; }
   {% endif %}
-  if(!curDate) curDate = DayNav.todayLocal();
+  if(!curDate) curDate = DayNav.yesterdayLocal();  // 初期表示は前日
   try{ await load(curDate); }
   catch(e){ showErr("読み込みに失敗: "+(e&&e.message?e.message:e)); }
 })();

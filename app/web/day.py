@@ -18,7 +18,7 @@ from app import auth
 from app.config import settings
 from app.services import gym_db
 from app.services.coach import get_day_comment
-from app.services.dates import today_jst
+from app.services import dates as jst_dates
 from app.services.day_view import (
     build_day_data, add_entry_manual, update_entry_full,
 )
@@ -88,7 +88,8 @@ def day_page(request: Request, member_id: str = "", date: str = ""):
         "can_comment": can_comment,
         "can_edit": can_edit,
         "liff_id": settings.LIFF_ID,
-        "initial_date": date,
+        # 初期表示は前日（?date= の指定があればそれを優先）
+        "initial_date": date or jst_dates.yesterday_jst(),
     })
 
 
@@ -107,7 +108,8 @@ class DayDataIn(BaseModel):
 def day_data(body: DayDataIn, request: Request):
     uid, is_trainer, _viewer = _resolve_viewer(
         request, body.member_id, body.id_token)
-    target = body.date or today_jst()
+    # date 未指定なら前日（JST）。?date= 指定は上書きされる
+    target = body.date or jst_dates.yesterday_jst()
     data = build_day_data(uid, target)
     data["ai_comment"] = get_day_comment(uid, target)
     data["trainer_comments"] = gym_db.fetch_comments_for_date(uid, target)

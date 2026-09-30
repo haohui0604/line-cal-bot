@@ -31,11 +31,19 @@
   /** 今日（ローカル基準） */
   function todayLocal() { return fmtLocal(new Date()); }
 
+  /** 前日（ローカル基準）— 日別ビューの初期表示に使う */
+  function yesterdayLocal() {
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    return fmtLocal(d);
+  }
+
   const api = {
     shiftDate: shiftDate,
     parseLocal: parseLocal,
     fmtLocal: fmtLocal,
     todayLocal: todayLocal,
+    yesterdayLocal: yesterdayLocal,
   };
   global.DayNav = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;

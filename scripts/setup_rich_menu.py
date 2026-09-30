@@ -6,7 +6,7 @@
 前提:
 - 環境変数 LINE_CHANNEL_ACCESS_TOKEN が設定済み
 - 環境変数 LIFF_ID が設定済み（マイページボタンに使用）
-- 2500x1686 のPNG画像 richmenu.png をこのリポジトリ直下に用意
+- 2500x1686 のPNG画像 assets/richmenu.png（このリポジトリに同梱済み）
   （2x2の4分割。上から: マイページ / 初期設定 / AI人格設定 / 使い方）
 """
 import os
@@ -38,8 +38,8 @@ menu = RichMenu(
         RichMenuArea(
             bounds=RichMenuBounds(x=0, y=0, width=1250, height=843),
             action=URIAction(label="マイページ", uri=liff_url)),
-        # 右上: 目的設定（目標体重・減塩・筋肉のウィザード）
-        pb_area(1250, 0, "目的設定", "cmd=goal"),
+        # 右上: 初期設定（目的ウィザード: 減量/減塩/筋肉をボタンで選択）
+        pb_area(1250, 0, "初期設定", "cmd=goal", "初期設定"),
         # 左下: AI人格設定（既存コマンド）
         pb_area(0, 843, "AI人格設定", "cmd=persona", "人格設定"),
         # 右下: 使い方（既存ヘルプ）
@@ -48,7 +48,7 @@ menu = RichMenu(
 )
 
 rid = api.create_rich_menu(rich_menu=menu)
-with open("richmenu.png", "rb") as f:          # 2500x1686 / PNG / 1MB以下
+with open("assets/richmenu.png", "rb") as f:          # 2500x1686 / PNG / 1MB以下
     api.set_rich_menu_image(rid, "image/png", f.read())
 api.set_default_rich_menu(rid)
 print("done:", rid)

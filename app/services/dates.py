@@ -21,3 +21,17 @@ def today_jst() -> str:
 def today_jst_date() -> _date:
     """今日の日付 (date オブジェクト, JST基準)."""
     return now_jst().date()
+
+
+def yesterday_jst() -> str:
+    """前日の日付 (YYYY-MM-DD, JST基準).
+
+    日別ビューの初期表示に使う。当日は記録が埋まっておらず
+    「まだ何もない」状態を見せる意味が薄いため、前日を既定にする。
+    """
+    return (now_jst().date() - timedelta(days=1)).isoformat()
+
+
+def yesterday_jst_date() -> _date:
+    """前日の日付 (date オブジェクト, JST基準)."""
+    return now_jst().date() - timedelta(days=1)
