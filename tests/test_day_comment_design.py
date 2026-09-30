@@ -42,7 +42,7 @@ def test_prompt_orders_ai_opinion_before_trainer():
     cite = prompt.index("さんも前に言ってたな")
     assert own < cite, "自分の見立てより先にトレーナー言及の指示が出ています"
     assert "そのまま繰り返す" in prompt, "繰り返し禁止の指示がありません"
-    assert "無理に触れなくてよい" in prompt
+    assert "毎回必ず引用する必要はない" in prompt  # 引用は任意（必要な時だけ）
 
 
 def test_prompt_includes_dated_past_trainer_comments():

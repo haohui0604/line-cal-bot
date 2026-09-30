@@ -25,11 +25,60 @@ from app.services.db import (
 from app.services.gym_db import fetch_active_directives, fetch_past_trainer_comments
 from app.services.goals import context_line as goal_context_line
 from app.services.day_view import SLOT_JP
+from app.services.dates import now_jst, today_jst
 
 logger = logging.getLogger(__name__)
 
 MODELS = ("gemini-flash-latest", "gemini-2.0-flash", "gemini-flash-lite-latest")
 API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
+
+BUCKET_JP = {"morning": "朝", "noon": "昼", "evening": "夕方",
+             "night": "夜", "final": "確定"}
+
+TIME_GUIDE = {
+    "morning": ("今日はまだ朝。朝食の記録があれば労い、これからの1日の"
+                "立て方（昼・夕の配分）を前向きに伝える。"),
+    "noon":    ("昼時点の途中経過。ここまでの摂取と目標の残り枠を明示し、"
+                "「あと◯◯kcalあるから夕食は◯◯系が食べられる」のように"
+                "具体的な料理名で1〜2品提案する。"),
+    "evening": ("夕方時点の途中経過。残り枠から夕食の選択肢を具体的に。"
+                "間食が多い日は優しく指摘してよい。"),
+    "night":   ("1日がほぼ終わった時点。今日の総括を労いつつ、"
+                "明日への一手を添える。"),
+    "final":   ("対象日の確定データとして1日を総括する。"),
+}
+
+
+def _time_bucket(target_date: str) -> str:
+    """対象日が今日なら JST の時刻帯バケット、過去日なら 'final' を返す."""
+    if target_date != today_jst():
+        return "final"
+    h = now_jst().hour
+    if 5 <= h < 11:
+        return "morning"
+    if 11 <= h < 16:
+        return "noon"
+    if 16 <= h < 22:
+        return "evening"
+    return "night"
+
+
+def _situation_block(f: dict) -> str:
+    b = f.get("time_bucket", "final")
+    rem = f.get("remaining_kcal")
+    rem_line = (f"- 目標までの残り摂取枠: {rem}kcal\n"
+                if rem is not None else "")
+    if b == "final":
+        return ("# 状況\n"
+                "- 対象日のデータは確定（1日の終わり、または過去日）。"
+                "1日全体の総括としてコメントする。\n" + rem_line)
+    return ("# 状況（1日の途中経過。確定値ではない）\n"
+            f"- 現在の時刻帯: {BUCKET_JP[b]}\n"
+            + rem_line
+            + f"- 指示: {TIME_GUIDE[b]}\n"
+              "- 途中経過なので『1日分が確定した』かのように低摂取を責めてはいけない。"
+              "まだ記録されていない食事がある前提で話す。\n")
+
 
 # 過去のトレーナーコメントを何日分さかのぼるか
 PAST_COMMENT_DAYS = 14
@@ -83,6 +132,11 @@ def _build_facts(user_id: str, target_date: str) -> dict:
             for p in past
         ],
     }
+    # 時刻帯（今日のみ朝/昼/夕方/夜）と目標残り枠。ハッシュに含めるため、
+    # 時刻帯が切り替わるとその日のコメントも自動で作り直される。
+    facts["time_bucket"] = _time_bucket(target_date)
+    facts["remaining_kcal"] = (
+        facts["goal"] - facts["intake"]) if facts.get("goal") else None
     # ハッシュに「過去のトレーナーコメント」を含める。
     # → 過去日にコメントが付くと翌日以降のキャッシュが自動で作り直される。
     #    同じ日にコメントが付いても、その日のキャッシュは変化しない（意図どおり）。
@@ -93,14 +147,27 @@ def _build_facts(user_id: str, target_date: str) -> dict:
 
 
 def _rule_based(f: dict) -> str:
-    """LLM失敗時のフォールバック（事実のみ）."""
-    bal = f["intake"] - f["burn"]
-    sign = "超過" if bal > 0 else "以内"
-    parts = [f"摂取 {f['intake']}kcal / 消費 {f['burn']}kcal（{abs(bal)}kcal{sign}）。"]
-    if f.get("goal"):
-        parts.append(f"目標は {f['goal']}kcal。")
+    """LLM失敗時のフォールバック（事実のみ。時刻帯に応じた言い回し）."""
+    b = f.get("time_bucket", "final")
+    rem = f.get("remaining_kcal")
+    if b == "final":
+        bal = f["intake"] - f["burn"]
+        sign = "超過" if bal > 0 else "以内"
+        parts = [f"摂取 {f['intake']}kcal / 消費 {f['burn']}kcal"
+                 f"（{abs(bal)}kcal{sign}）。"]
+        if f.get("goal"):
+            parts.append(f"目標は {f['goal']}kcal。")
+        if not f["foods"]:
+            parts.append("この日の食事記録はまだありません。")
+        return "".join(parts)
+    # 途中経過（朝/昼/夕方/夜）
+    parts = [f"この時点（{BUCKET_JP[b]}）の摂取は {f['intake']}kcal。"]
+    if rem is not None:
+        parts.append(f"目標まであと {rem}kcal の枠がある。")
     if not f["foods"]:
-        parts.append("この日の食事記録はまだありません。")
+        parts.append("まだ今日の記録がない。食べたら記録しておこう。")
+    elif b == "noon":
+        parts.append("夕食はこの残り枠を目安に選ぶとよい。")
     return "".join(parts)
 
 
@@ -129,17 +196,23 @@ def build_prompt(persona: dict, f: dict, goal_line: str = "",
             "\n# 過去の担当トレーナーからの指導（参考情報）\n"
             + lines + "\n")
 
+    bucket = f.get("time_bucket", "final")
+    situation = _situation_block(f)
+    data_heading = ("# 対象日のデータ（確定値。改変・捏造は禁止）"
+                    if bucket == "final"
+                    else "# 対象日のこの時点のデータ（途中経過。改変・捏造は禁止）")
     return f"""あなたはユーザーの食事・運動に伴走するコーチ「{persona['bot_name']}」です。
 一人称は「{persona['bot_pronoun']}」。性格・口調: {persona['bot_tone'] or '優しく励ます'}
 
 # 話す順番（厳守）
-1. まず、下の数値だけを見て「あなた自身の見立て」を述べる。何が良くて何を変えるかは自分で判断する。
-2. そのあとで、過去のトレーナー指導が今日の内容に本当に関係する場合に限り、
+1. まず、下の数値と「状況」だけを見て「あなた自身の見立て」を述べる。何が良くて何を変えるかは自分で判断する。
+2. そのあとで、過去のトレーナー指導が今日の内容に本当に関係し、引用が助言の助けになる場合に限り、
    「{'{trainer}'}さんも前に言ってたな」のように一言だけ添える。
 3. トレーナーの発言をそのまま繰り返す・要約して済ませるのは禁止。あなたの意見が主、トレーナーは補足。
-4. 過去の指導が今日の内容に関係しないなら、無理に触れなくてよい。
+4. トレーナー指導は毎回必ず引用する必要はない。関係が薄い・不要なら一切触れない。
 
-# 対象日のデータ（確定値。改変・捏造は禁止）
+{situation}
+{data_heading}
 - 日付: {f['date']}
 - 摂取: {f['intake']}kcal（P{f['protein_g']}g F{f['fat_g']}g C{f['carb_g']}g）
 - 消費: {f['burn']}kcal
@@ -195,7 +268,8 @@ def get_day_comment(user_id: str, target_date: str) -> dict:
       - 同じ日にトレーナーコメントを付けても、その日のAIコメントは変わらない
     """
     facts = _build_facts(user_id, target_date)
-    key = f"dayview:{user_id}:{target_date}:{facts['hash']}"
+    key = (f"dayview:{user_id}:{target_date}:"
+           f"{facts['time_bucket']}:{facts['hash']}")
 
     try:
         cached = get_report_comment(key)

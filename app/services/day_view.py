@@ -1,5 +1,6 @@
 """日別ビュー用のデータ集約と記録の追加/更新 (Phase 3.5)."""
 import logging
+import sqlite3
 from typing import Any, Dict, Optional
 
 from app.services.db import (
@@ -89,16 +90,38 @@ def add_entry_manual(user_id: str, *, date: str, meal_slot: str,
 def update_entry_full(user_id: str, entry_id: int, *, meal_slot: str,
                       food_name: str, kcal: float,
                       protein_g=None, fat_g=None, carb_g=None,
-                      salt_g=None) -> bool:
-    """既存記録の全項目更新."""
+                      salt_g=None, date: Optional[str] = None) -> bool:
+    """既存記録の全項目更新（区分・日付の付け替えに対応）.
+
+    date を指定すると記録日ごと移動する。日別ビュー・集計・グラフは
+    すべて entries.date を参照しているため、日付を変えれば旧日の集計から
+    外れ、新しい日の集計に載る（時刻カラムは持たない設計なので時刻は保持
+    対象外＝日付単位で移動する）。
+    所有者チェックは WHERE id=? AND user_id=? が担う。他人の entry_id を
+    渡しても 0 件更新（False）になり、更新は起こらない。
+    """
+    sets = ["meal_slot=?", "food_name=?", "kcal=?",
+            "protein_g=?", "fat_g=?", "carb_g=?", "salt_g=?",
+            "updated_at=CURRENT_TIMESTAMP"]
+    params: list = [meal_slot, food_name, kcal,
+                    protein_g, fat_g, carb_g, salt_g]
+    if date is not None:
+        sets.append("date=?")
+        params.append(date)
+    params.extend([entry_id, user_id])
     with get_conn() as c:
-        cur = c.execute(
-            """UPDATE entries SET meal_slot=?, food_name=?, kcal=?,
-                 protein_g=?, fat_g=?, carb_g=?, salt_g=?,
-                 updated_at=CURRENT_TIMESTAMP
-               WHERE id=? AND user_id=?""",
-            (meal_slot, food_name, kcal, protein_g, fat_g, carb_g, salt_g,
-             entry_id, user_id))
+        try:
+            cur = c.execute(
+                "UPDATE entries SET " + ", ".join(sets) +
+                " WHERE id=? AND user_id=?", tuple(params))
+        except sqlite3.IntegrityError as e:
+            raise ValueError(
+                "同じ日付・区分に同名の記録がすでにあります") from e
+        except Exception as e:  # libsql は独自の例外型を投げる場合がある
+            if "unique" in str(e).lower():
+                raise ValueError(
+                    "同じ日付・区分に同名の記録がすでにあります") from e
+            raise
         return cur.rowcount > 0
 
 

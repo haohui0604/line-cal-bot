@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     SESSION_SECRET: str = "dev-only-secret"  # 本番は必ず長い乱数に変更
     # ジム作成などの管理操作を許可する LINE user ID（カンマ区切り）
     ADMIN_USER_IDS: str = ""
+    # トレーナー/ジム管理者として登録済みのユーザーにもジム作成を許可する
+    ALLOW_STAFF_GYM_CREATE: bool = True
 
     # --- スリープ対策（Render無料枠の15分スリープより短くする） ---
     SELF_PING_ENABLED: bool = True

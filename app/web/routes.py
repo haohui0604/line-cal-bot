@@ -15,6 +15,7 @@ from fastapi.templating import Jinja2Templates
 from pathlib import Path
 
 from app import auth
+from app.config import settings
 from app.services import gym_db
 from app.services.gym_db import (
     upsert_user, get_membership_for_user, is_staff,
@@ -149,9 +150,11 @@ def admin_gym(request: Request):
     admin_ms = [m for m in gym_db.get_staff_memberships(uid) if m["role"] == "gym_admin"]
     if not admin_ms:
         raise HTTPException(status_code=403, detail="ジム管理者権限がありません")
-    return templates.TemplateResponse("admin_gym.html", {
-        "request": request, "gyms": admin_ms,
-    })
+    for g in admin_ms:
+        g["members"] = gym_db.list_members_for_gym(g["gym_id"])
+    # request を第1引数で渡す（新しい Starlette でも動く書き方）
+    return templates.TemplateResponse(
+        request, "admin_gym.html", {"gyms": admin_ms})
 
 
 @router.post("/api/admin/gym/invite")
@@ -166,3 +169,39 @@ def admin_gym_invite(request: Request, body: dict):
         raise HTTPException(status_code=403, detail="このジムの管理者ではありません")
     code = gym_db.create_trainer_invite(gym_id, uid)
     return {"code": code}
+
+
+# ---- ジム管理（オーナー）: 会員の解除 ----
+
+def _push_to_user(line_user_id: str, text: str) -> None:
+    """LINE push（未設定・失敗時は黙って続行）."""
+    if not settings.LINE_CHANNEL_ACCESS_TOKEN:
+        return
+    try:
+        from linebot import LineBotApi
+        from linebot.models import TextSendMessage
+        LineBotApi(settings.LINE_CHANNEL_ACCESS_TOKEN).push_message(
+            line_user_id, TextSendMessage(text=text))
+    except Exception:
+        logger.exception("push to user failed")
+
+
+@router.post("/api/admin/gym/member/remove")
+def admin_gym_member_remove(request: Request, body: dict):
+    """オーナーが会員をジムから解除する（status='left'）。"""
+    uid = auth.current_user_id(request)
+    if not uid:
+        raise HTTPException(status_code=401, detail="ログインが必要です")
+    membership_id = int(body.get("membership_id") or 0)
+    res = gym_db.remove_member(membership_id, by_user_id=uid)
+    if res["result"] == "not_found":
+        raise HTTPException(status_code=404, detail="会員が見つかりません")
+    if res["result"] == "forbidden":
+        raise HTTPException(status_code=403, detail="このジムの管理者ではありません")
+    _push_to_user(
+        res["member_id"],
+        f"🏋️「{res.get('gym_name') or 'ジム'}」から退出しました。\n"
+        "これまでの記録データはそのまま残っています。\n"
+        "別のジムに入るには、そのジムの入会コード（GYM-XXXX）を"
+        "このトークに送ってください。")
+    return {"ok": True}

@@ -273,16 +273,20 @@ function render(d){
           + ' data-p="'+(e.protein_g==null?"":e.protein_g)+'"'
           + ' data-f="'+(e.fat_g==null?"":e.fat_g)+'"'
           + ' data-c="'+(e.carb_g==null?"":e.carb_g)+'"'
-          + ' data-salt="'+(e.salt_g==null?"":e.salt_g)+'">'
+          + ' data-salt="'+(e.salt_g==null?"":e.salt_g)+'"'
+          + ' data-note="'+encodeURIComponent(e.note||"")+'">'
           + '<div class="entry-main"><span class="fname">'+esc(e.food_name)+'</span>'
           + '<span class="fkcal">'+fmt(e.kcal)+' kcal</span></div>'
           + '<div class="entry-sub"><span class="fpfc">P'+fmt(e.protein_g)
           + ' F'+fmt(e.fat_g)+' C'+fmt(e.carb_g)
           + (e.salt_g ? ' 塩'+e.salt_g+'g' : '')+'</span>'
           + (CAN_EDIT ? '<span class="acts">'
+          + '<button class="btn btn-ghost btn-sm" onclick="editNote(this,'+e.id+')">📝</button>'
+          + '<button class="btn btn-ghost btn-sm" onclick="askQ(this,'+e.id+')">❓</button>'
           + '<button class="btn btn-ghost btn-sm" onclick="startEdit(this,'+e.id+')">修正</button>'
           + '<button class="btn btn-ghost btn-sm" onclick="delEntry('+e.id+')">削除</button>'
           + '</span>' : '')
+          + (e.note ? '<div class="muted" style="font-size:12px">📝 '+esc(e.note)+'</div>' : '')
           + '</div></div>';
       }
     }
@@ -296,7 +300,9 @@ function render(d){
   for(const cm of list){
     const div=document.createElement("div");
     div.style.cssText="border-bottom:1px solid var(--line);padding:8px 0";
-    const badge = cm.author_type==="trainer" ? '<span class="badge">トレーナー</span>' : '<span class="badge badge-green">AI</span>';
+    const badge = cm.author_type==="trainer" ? '<span class="badge">トレーナー</span>'
+        : (cm.author_type==="member" ? '<span class="badge badge-green">会員</span>'
+        : '<span class="badge badge-green">AI</span>');
     div.innerHTML = badge + (cm.is_directive?' <span class="badge badge-green">⭐翌日以降に反映</span>':'')
       + ' <span class="muted">'+esc(cm.author_name||"")+" "+esc(cm.created_at||"")+'</span><div style="white-space:pre-wrap;margin-top:4px"></div>';
     div.querySelector("div").textContent = cm.body;
@@ -321,10 +327,35 @@ async function addEntry(){
   catch(e){ showErr("追加に失敗: "+e.message); }
 }
 
+async function editNote(btn, id){
+  const box = btn.closest(".entry");
+  const cur = decodeURIComponent(box.dataset.note || "");
+  const v = prompt("自分メモ（空にすると削除）", cur);
+  if(v === null) return;
+  try{ await api("/api/day/entries", {action:"memo", entry_id:id, body:v.trim()}); load(); }
+  catch(e){ showErr("メモの保存に失敗: "+e.message); }
+}
+
+async function askQ(btn, id){
+  const v = prompt("トレーナーへの質問（この記録について）", "");
+  if(v === null || !v.trim()) return;
+  try{
+    const r = await api("/api/day/entries", {action:"question", entry_id:id, body:v.trim()});
+    alert(r.pushed ? "トレーナーに送信しました"
+                   : "質問を保存しました（担当トレーナー未設定のため通知は未送信）");
+    load();
+  }catch(e){ showErr("質問の送信に失敗: "+e.message); }
+}
+
 async function delEntry(id){
   if(!confirm("この記録を削除しますか？")) return;
   try{ await api("/api/day/entries", {action:"delete", entry_id:id}); load(); }
   catch(e){ showErr("削除に失敗: "+e.message); }
+}
+
+function todayLocalStr(){
+  const d = new Date(), p = n => String(n).padStart(2, "0");
+  return d.getFullYear()+"-"+p(d.getMonth()+1)+"-"+p(d.getDate());
 }
 
 function startEdit(btn, id){
@@ -332,12 +363,16 @@ function startEdit(btn, id){
   const slot = box.dataset.slot || "snack";
   const name = box.querySelector(".fname").textContent;
   const kcal = parseFloat(box.querySelector(".fkcal").textContent);
+  const opt = s => '<option value="'+s+'"'+(s===slot?' selected':'')+'>'+SLOT_JP[s]+'</option>';
   box.innerHTML = '<div class="editrow" data-orig-slot="'+slot+'">'
     + '<input id="e_name" value="">'
     + '<div class="grid"><input id="e_kcal" type="number" placeholder="kcal">'
     + '<input id="e_p" type="number" step="0.1" placeholder="P g">'
     + '<input id="e_f" type="number" step="0.1" placeholder="F g">'
     + '<input id="e_c" type="number" step="0.1" placeholder="C g"></div>'
+    + '<div style="display:flex;gap:6px;margin-top:6px">'
+    + '<select id="e_slot" style="flex:1">'+SLOT_ORDER.map(opt).join("")+'</select>'
+    + '<input id="e_date" type="date" style="flex:1" max="'+todayLocalStr()+'"></div>'
     + '<button class="btn btn-sm" style="margin-top:6px" onclick="saveEdit(this,'+id+')">保存</button> '
     + '<button class="btn btn-ghost btn-sm" style="margin-top:6px" onclick="load()">取消</button></div>';
   document.getElementById("e_name").value = name;
@@ -345,17 +380,22 @@ function startEdit(btn, id){
   document.getElementById("e_p").value = box.dataset.p || "";
   document.getElementById("e_f").value = box.dataset.f || "";
   document.getElementById("e_c").value = box.dataset.c || "";
+  // 区分・日付は現在の値で初期表示（日付は表示中の日）
+  document.getElementById("e_slot").value = slot;
+  document.getElementById("e_date").value = curDate || "";
 }
 
 async function saveEdit(btn, id){
-  const origSlot = btn.closest(".editrow").dataset.origSlot || "snack";
   const num = i=>{const v=document.getElementById(i).value;return v===""?null:parseFloat(v);};
+  const slot = document.getElementById("e_slot").value || "snack";
+  const newDate = document.getElementById("e_date").value || curDate;
   try{
     await api("/api/day/entries", {action:"edit", entry_id:id,
-      meal_slot: origSlot,   // 区分は元の値を維持
+      meal_slot: slot, date: newDate,
       food_name: document.getElementById("e_name").value.trim(),
       kcal: num("e_kcal"), protein_g:num("e_p"), fat_g:num("e_f"), carb_g:num("e_c")});
-    load();
+    if(newDate !== curDate){ load(newDate); }   // 移動先の日を表示
+    else load();
   }catch(e){ showErr("保存に失敗: "+e.message); }
 }
 

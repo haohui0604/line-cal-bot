@@ -361,7 +361,7 @@ def fetch_entries_for_date(user_id: str, date: str) -> List[Dict[str, Any]]:
     """指定日の食事明細を返す（AIコンテキスト注入用）."""
     with get_conn() as c:
         rows = c.execute(
-            "SELECT id, meal_slot, food_name, kcal, protein_g, fat_g, carb_g, salt_g"
+            "SELECT id, meal_slot, food_name, kcal, protein_g, fat_g, carb_g, salt_g, note"
             " FROM entries WHERE user_id=? AND date=?"
             " ORDER BY CASE meal_slot"
             "  WHEN 'breakfast' THEN 1 WHEN 'lunch' THEN 2"
@@ -529,3 +529,22 @@ def purge_report_comments(user_id: str, scope: str | None = None) -> int:
         cur = conn.execute(sql, tuple(args))
         conn.commit()
         return cur.rowcount
+
+
+def update_entry_note(user_id: str, entry_id: int, note: str) -> bool:
+    """記録の自分メモ(note)を更新。所有者チェックは WHERE user_id が担う."""
+    with get_conn() as c:
+        cur = c.execute(
+            "UPDATE entries SET note=?, updated_at=CURRENT_TIMESTAMP"
+            " WHERE id=? AND user_id=?", (note, entry_id, user_id))
+        return cur.rowcount > 0
+
+
+def fetch_entry_for_user(user_id: str, entry_id: int):
+    """本人の記録を1件取得（質問の文脈付け用）。無ければ None."""
+    with get_conn() as c:
+        r = c.execute(
+            "SELECT id, user_id, date, meal_slot, food_name, kcal, note"
+            " FROM entries WHERE id=? AND user_id=?",
+            (entry_id, user_id)).fetchone()
+    return dict(r) if r else None

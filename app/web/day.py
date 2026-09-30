@@ -4,6 +4,7 @@
 - 会員: LIFF内で /day を開き id_token で本人確認（自分の記録の編集可）
 """
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -22,10 +23,15 @@ from app.services import dates as jst_dates
 from app.services.day_view import (
     build_day_data, add_entry_manual, update_entry_full,
 )
-from app.services.db import delete_entry
+from app.services.db import (
+    delete_entry, fetch_entry_for_user, update_entry_note,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# 記録区分（DB の meal_slot に入る許可値）
+ALLOWED_SLOTS = ("breakfast", "lunch", "dinner", "snack", "night")
 templates = Jinja2Templates(
     directory=str(Path(__file__).resolve().parent.parent / "templates")
 )
@@ -135,6 +141,7 @@ class EntryOpIn(BaseModel):
     fat_g: Optional[float] = None
     carb_g: Optional[float] = None
     salt_g: Optional[float] = None
+    body: Optional[str] = None   # memo/question の本文
 
 
 @router.post("/api/day/entries")
@@ -166,14 +173,70 @@ def day_entry_ops(body: EntryOpIn, request: Request):
         if not (body.entry_id and body.meal_slot and body.food_name
                 and body.kcal is not None):
             raise HTTPException(status_code=400, detail="必須項目が不足しています")
-        ok = update_entry_full(
-            uid, body.entry_id, meal_slot=body.meal_slot,
-            food_name=body.food_name.strip(), kcal=body.kcal,
-            protein_g=body.protein_g, fat_g=body.fat_g,
-            carb_g=body.carb_g, salt_g=body.salt_g)
+        # 区分は許可値のみ
+        if body.meal_slot not in ALLOWED_SLOTS:
+            raise HTTPException(
+                status_code=400,
+                detail="区分は 朝食/昼食/夕食/間食/夜食 から選んでください")
+        # 日付は実在する日付・未来日不可（未指定なら日付は変更しない）
+        new_date = (body.date or "").strip() or None
+        if new_date:
+            try:
+                parsed = datetime.strptime(new_date, "%Y-%m-%d").date()
+            except ValueError:
+                raise HTTPException(
+                    status_code=400,
+                    detail="日付は YYYY-MM-DD 形式で指定してください")
+            if parsed > jst_dates.today_jst_date():
+                raise HTTPException(
+                    status_code=400, detail="未来の日付には変更できません")
+            new_date = parsed.isoformat()
+        try:
+            ok = update_entry_full(
+                uid, body.entry_id, meal_slot=body.meal_slot,
+                food_name=body.food_name.strip(), kcal=body.kcal,
+                protein_g=body.protein_g, fat_g=body.fat_g,
+                carb_g=body.carb_g, salt_g=body.salt_g, date=new_date)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        if not ok:
+            # 所有者チェック: 他人の entry_id / 存在しない id はここで 404
+            raise HTTPException(status_code=404, detail="記録が見つかりません")
+        return {"ok": True, "date": new_date}
+
+    if body.action == "memo":
+        # 自分メモ（本人のみ。entries.note に保存）
+        if not body.entry_id:
+            raise HTTPException(status_code=400, detail="entry_id が必要です")
+        ok = update_entry_note(uid, body.entry_id, (body.body or "").strip())
         if not ok:
             raise HTTPException(status_code=404, detail="記録が見つかりません")
         return {"ok": True}
+
+    if body.action == "question":
+        # トレーナーへの質問（本人のみ。コメントとして保存し担当Tへ通知）
+        if not body.entry_id:
+            raise HTTPException(status_code=400, detail="entry_id が必要です")
+        text = (body.body or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="質問内容が空です")
+        entry = fetch_entry_for_user(uid, body.entry_id)
+        if not entry:
+            raise HTTPException(status_code=404, detail="記録が見つかりません")
+        qdate = entry.get("date") or body.date or jst_dates.today_jst()
+        gym_db.add_comment(
+            user_id=uid,
+            body=f"❓ {entry['food_name']}（{qdate}）についての質問\n{text}",
+            author_type="member", author_id=uid,
+            target_date=qdate, is_directive=False)
+        trainer_id = gym_db.get_member_trainer(uid)
+        if trainer_id:
+            me = gym_db.get_user(uid) or {}
+            _push_to_member(
+                trainer_id,
+                f"❓ {me.get('display_name') or '会員'} さんから質問が届きました\n"
+                f"{qdate} / {entry['food_name']}\n\n{text}")
+        return {"ok": True, "pushed": bool(trainer_id)}
 
     if body.action == "delete":
         if not body.entry_id:

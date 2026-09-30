@@ -134,7 +134,9 @@ def get_membership_for_user(user_id: str) -> Optional[Dict[str, Any]]:
             "SELECT m.id, m.gym_id, m.role, m.status, m.trainer_id,"
             "       g.name AS gym_name"
             " FROM memberships m JOIN gyms g ON g.id=m.gym_id"
-            " WHERE m.user_id=? ORDER BY m.id DESC LIMIT 1", (user_id,)
+            " WHERE m.user_id=?"
+            " ORDER BY CASE WHEN m.status='active' THEN 0 ELSE 1 END,"
+            "          m.id DESC LIMIT 1", (user_id,)
         ).fetchone())
 
 
@@ -406,3 +408,59 @@ def fetch_past_trainer_comments(user_id: str, before_date: str,
             " LIMIT ?", (user_id, str(before_date)[:10], since, limit)
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_member_trainer(user_id: str) -> Optional[str]:
+    """会員の担当トレーナー（active 所属の trainer_id）を1件返す。未設定なら None."""
+    from app.services.db import get_conn
+    with get_conn() as c:
+        r = c.execute(
+            "SELECT trainer_id FROM memberships"
+            " WHERE user_id=? AND role='member' AND status='active'"
+            "   AND trainer_id IS NOT NULL ORDER BY id DESC LIMIT 1",
+            (user_id,)).fetchone()
+    return r["trainer_id"] if r else None
+
+
+def list_members_for_gym(gym_id: int) -> List[Dict[str, Any]]:
+    """ジムの active 会員一覧（オーナーの管理画面用）."""
+    with get_conn() as c:
+        rows = c.execute("""
+            SELECT m.id AS membership_id, m.user_id, m.trainer_id,
+                   u.display_name, u.picture_url,
+                   t.display_name AS trainer_name
+            FROM memberships m
+            LEFT JOIN users u ON u.line_user_id = m.user_id
+            LEFT JOIN users t ON t.line_user_id = m.trainer_id
+            WHERE m.gym_id=? AND m.role='member' AND m.status='active'
+            ORDER BY u.display_name, m.id
+        """, (gym_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def remove_member(membership_id: int, *, by_user_id: str) -> Dict[str, Any]:
+    """オーナー（そのジムの gym_admin）による会員の解除。
+
+    status='left' にし、担当トレーナーの紐づけも外す。食事・体重などの
+    記録データ自体は削除しない（ジムとの紐づけだけを切る）。
+    実行者がそのジムの gym_admin(active) でなければ forbidden を返す。
+    """
+    with get_conn() as c:
+        row = c.execute(
+            "SELECT m.id, m.gym_id, m.user_id, g.name AS gym_name"
+            " FROM memberships m JOIN gyms g ON g.id=m.gym_id"
+            " WHERE m.id=? AND m.role='member' AND m.status='active'",
+            (membership_id,)).fetchone()
+        if not row:
+            return {"result": "not_found"}
+        owner = c.execute(
+            "SELECT 1 FROM memberships WHERE gym_id=? AND user_id=?"
+            " AND role='gym_admin' AND status='active'",
+            (row["gym_id"], by_user_id)).fetchone()
+        if not owner:
+            return {"result": "forbidden"}
+        c.execute(
+            "UPDATE memberships SET status='left', trainer_id=NULL,"
+            " updated_at=CURRENT_TIMESTAMP WHERE id=?", (membership_id,))
+    return {"result": "ok", "member_id": row["user_id"],
+            "gym_id": row["gym_id"], "gym_name": row["gym_name"]}

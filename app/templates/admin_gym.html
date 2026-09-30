@@ -26,6 +26,33 @@
   <div class="code" id="code-{{ g.gym_id }}"></div>
   <div class="muted">発行したコードをトレーナーに伝え、
     Webログイン後に入力してもらってください（有効期限7日・1回限り）</div>
+
+  <hr style="border:none;border-top:1px solid #e5e7eb;margin:16px 0">
+  {% set ms = g.members or [] %}
+  <b>会員（{{ ms|length }}名）</b>
+  {% if ms %}
+  <table style="width:100%;border-collapse:collapse;margin-top:6px">
+    {% for m in ms %}
+    <tr>
+      <td style="padding:8px 0;border-top:1px solid #f1f2f4">
+        {% if m.picture_url %}<img src="{{ m.picture_url }}" alt=""
+          style="width:26px;height:26px;border-radius:50%;vertical-align:middle">{% endif %}
+        {{ m.display_name or m.user_id }}
+        <div class="muted">担当トレーナー: {{ m.trainer_name or "未割当" }}</div>
+      </td>
+      <td style="text-align:right;border-top:1px solid #f1f2f4">
+        <button class="rm" data-mid="{{ m.membership_id }}"
+          data-name="{{ m.display_name or m.user_id }}"
+          style="background:#e5484d">解除</button>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <div class="muted" style="margin-top:6px">まだ会員がいません。</div>
+  {% endif %}
+  <div class="muted" style="margin-top:8px">解除すると、この管理画面からその会員の記録は
+    見えなくなります（記録データ自体は消えません）。再入会は入会コードで可能です。</div>
 </div>
 {% endfor %}
 </main>
@@ -40,6 +67,26 @@ async function invite(gymId, btn){
     btn.disabled = true;
   } else {
     alert("発行に失敗しました");
+  }
+}
+
+document.querySelectorAll(".rm").forEach(b => {
+  b.onclick = () => removeMember(b.dataset.mid, b.dataset.name, b);
+});
+
+async function removeMember(mid, name, btn){
+  if(!confirm("「" + name + "」さんをジムから解除しますか？\n" +
+              "記録データは残ります。再入会は入会コードで可能です。")) return;
+  const res = await fetch("/api/admin/gym/member/remove", {method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({membership_id: Number(mid)})});
+  if(res.ok){
+    const tr = btn.closest("tr");
+    if(tr) tr.style.opacity = "0.35";
+    btn.disabled = true; btn.textContent = "解除済み";
+  } else {
+    const d = await res.json().catch(()=>({}));
+    alert("解除に失敗しました" + (d.detail ? ": " + d.detail : ""));
   }
 }
 </script>

@@ -6,7 +6,7 @@ from app.handlers.text_handler import handle_text
 from app.handlers.image_handler import handle_image
 from app.config import settings
 from app.services.gym_db import (
-    upsert_user, find_gym_by_code, request_join, create_gym,
+    upsert_user, find_gym_by_code, request_join, create_gym, is_staff,
 )
 
 logger = logging.getLogger(__name__)
@@ -81,7 +81,10 @@ def _handle_join_code(user_id: str, code: str, line_bot_api):
                  "トレーナーの承認をお待ちください。")
     return TextSendMessage(
         text=f"「{gym['name']}」への登録申請を受け付けました！\n"
-             "トレーナーの承認後に登録が完了します。")
+             "トレーナーの承認後に登録が完了します。\n\n"
+             "※承認後は、このジムのオーナーと担当トレーナーが"
+             "あなたの記録（食事・体重など）を閲覧できます。\n"
+             "解除したいときは、ジムのオーナーにご連絡ください。")
 
 
 def _get_profile_safe(user_id, line_bot_api):
@@ -95,23 +98,48 @@ def _get_profile_safe(user_id, line_bot_api):
         return None, None
 
 
-def _handle_create_gym(user_id: str, name: str, line_bot_api):
-    """管理者専用: LINEからジムを作成し、発行者をオーナー(gym_admin)にする。
+def _can_create_gym(user_id: str) -> bool:
+    """ジム作成の可否を判定する。
 
-    ADMIN_USER_IDS に含まれないユーザからの実行は拒否する。
+    許可するのは次のいずれか:
+      1) ADMIN_USER_IDS に登録された管理者
+      2) すでにトレーナー / ジム管理者として active なユーザー
+         （ALLOW_STAFF_GYM_CREATE が True のとき。既定 True）
+    作成した本人はそのジムのオーナー(gym_admin)になる。
     """
-    if user_id not in settings.admin_user_id_set:
+    if user_id in settings.admin_user_id_set:
+        return True
+    if settings.ALLOW_STAFF_GYM_CREATE and is_staff(user_id):
+        return True
+    return False
+
+
+def _handle_create_gym(user_id: str, name: str, line_bot_api):
+    """LINEからジムを作成し、発行者をオーナー(gym_admin)にする。
+
+    管理者に加えて、すでにトレーナー登録済みのユーザーも作成できる
+    （トレーナーが自分のジムを持てるようにするため）。
+    """
+    if not _can_create_gym(user_id):
         logger.warning("unauthorized gym creation attempt by %s", user_id)
         return TextSendMessage(
-            text="ジムの作成は管理者のみ行えます。")
+            text="ジムの作成は、管理者またはすでにトレーナー登録が済んでいる"
+                 "方が行えます。\n\n"
+                 "・運営（管理者）の方へご連絡いただく\n"
+                 "・所属しているジムのオーナーから"
+                 "トレーナー招待コード（TR-XXXX）を受け取る\n"
+                 "のいずれかをお試しください。")
     display_name, picture_url = _get_profile_safe(user_id, line_bot_api)
     upsert_user(user_id, display_name, picture_url)
     gym = create_gym(name=name, owner_user_id=user_id)
     return TextSendMessage(
         text=f"ジム「{gym['name']}」を作成しました！🏋️\n\n"
-             f"入会コード: {gym['join_code']}\n\n"
-             "会員さんにこのコードを伝えて、\n"
-             "このボットに送信してもらってください。")
+             "あなたにオーナー権限（ジム管理）を付与しました。\n\n"
+             f"【会員さんに伝える入会コード】\n{gym['join_code']}\n"
+             "→ 会員さんがこのコードをこのボットに送ると入会申請が届きます。\n\n"
+             f"【トレーナーを追加する】\n{settings.BASE_URL}/admin/gym\n"
+             "→ LINEログイン後、招待コード（TR-XXXX）を発行して"
+             "トレーナーに渡してください。")
 
 
 def on_message(event, line_bot_api):
