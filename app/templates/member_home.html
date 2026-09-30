@@ -81,17 +81,29 @@ async function api(path){
     method: "POST", headers: {"Content-Type": "application/json"},
     body: JSON.stringify({id_token: idToken})
   });
-  if(!res.ok) throw new Error("API error " + res.status);
+  if(!res.ok){
+    let detail = "";
+    try { detail = (await res.json()).detail || ""; } catch(_) {}
+    throw new Error("API " + path + " が " + res.status +
+                    " を返しました " + detail);
+  }
   return res.json();
 }
 
 function fmt(v){ return Math.round(v || 0); }
 
 async function main(){
-  await liff.init({liffId: LIFF_ID});
+  try {
+    await liff.init({liffId: LIFF_ID});
+  } catch(e) {
+    showErr("LIFF初期化エラー: " + (e && e.message ? e.message : e) +
+            " / LIFF_ID=" + LIFF_ID);
+    return;
+  }
   if(!liff.isLoggedIn()){ liff.login(); return; }
   idToken = liff.getIDToken();
-  if(!idToken){ showErr("認証情報を取得できませんでした"); return; }
+  if(!idToken){ showErr("IDトークンを取得できませんでした" +
+    "（LIFFのScopeに openid が必要です）"); return; }
 
   const s = await api("/api/me/summary");
   document.getElementById("tIntake").textContent = fmt(s.today.intake_kcal);
@@ -164,7 +176,7 @@ function switchTab(showComments){
   document.getElementById("tabComments").className = showComments ? "on" : "";
   document.getElementById("tabHistory").className = showComments ? "" : "on";
 }
-main().catch(e => { console.error(e); showErr("読み込みに失敗しました。LINEから開き直してください。"); });
+main().catch(e => { console.error(e); showErr("読み込みエラー: " + (e && e.message ? e.message : e)); });
 </script>
 </body>
 </html>
