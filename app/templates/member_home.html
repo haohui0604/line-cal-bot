@@ -4,8 +4,22 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>マイ記録</title>
-<script src="https://static.line-scdn.me/liff/edge/2/sdk.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script>
+// LIFF SDK は動的に読み込み、失敗を確実に検知する
+// （scriptタグ直書きだとブロック時に原因が見えないため）
+function loadLiffSdk(){
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = "https://static.line-scdn.me/liff/edge/2/sdk.js";
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error("SDK download failed"));
+    document.head.appendChild(s);
+    setTimeout(() => { if (typeof liff === "undefined") reject(
+      new Error("SDK load timeout")); }, 15000);
+  });
+}
+</script>
 <style>
   :root{ --bg:#f6f7f9; --card:#fff; --line:#e5e7eb; --text:#1f2937;
          --muted:#6b7280; --accent:#06c755; }
@@ -67,7 +81,10 @@
 </main>
 
 <script>
-const LIFF_ID = {{ liff_id | tojson }};
+// LIFF_ID にURLが丸ごと入っていても ID 部分だけ取り出す（設定ミス吸収）
+let LIFF_ID = {{ liff_id | tojson }};
+const _m = LIFF_ID.match(/([0-9]+-[A-Za-z0-9_-]+)/);
+if (_m) LIFF_ID = _m[1];
 let idToken = null;
 
 function showErr(msg){
@@ -93,6 +110,14 @@ async function api(path){
 function fmt(v){ return Math.round(v || 0); }
 
 async function main(){
+  try {
+    await loadLiffSdk();
+  } catch(e) {
+    showErr("LIFF SDK の読み込みに失敗しました（" + e.message + "）。\n" +
+      "コンテンツブロッカー（広告ブロック系アプリ）を一時OFFにするか、" +
+      "LINEアプリのトークからLIFFのURLを開き直してください。");
+    return;
+  }
   try {
     await liff.init({liffId: LIFF_ID});
   } catch(e) {
