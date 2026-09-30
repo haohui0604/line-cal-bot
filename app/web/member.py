@@ -99,5 +99,6 @@ def member_day_page():
     """会員の日別ビュー。/me のサブパスに置くことでLIFFのエンドポイント配下とする."""
     return templates.TemplateResponse("day_detail.html", {
         "request": {}, "member_id": None, "can_comment": False,
+        "can_edit": True,
         "liff_id": settings.LIFF_ID, "initial_date": "",
     })

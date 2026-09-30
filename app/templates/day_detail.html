@@ -120,6 +120,7 @@ function loadLiffSdk(){return new Promise((res,rej)=>{const s=document.createEle
     <div class="card">
       <b>🍽 記録</b>
       <div id="entriesArea"></div>
+      {% if can_edit %}
       <details>
         <summary>＋ 記録を手動追加</summary>
         <div class="grid" style="margin-top:8px">
@@ -138,6 +139,9 @@ function loadLiffSdk(){return new Promise((res,rej)=>{const s=document.createEle
         <button class="btn" style="margin-top:8px" onclick="addEntry()">追加</button>
         <div class="muted">※ PFCを空欄にするとAIが推定します</div>
       </details>
+      {% else %}
+      <p class="muted" style="margin-top:8px">記録の追加・修正・削除は会員本人のみ行えます（トレーナーは閲覧とコメントのみ）。</p>
+      {% endif %}
     </div>
 
     <div class="card">
@@ -159,6 +163,7 @@ function loadLiffSdk(){return new Promise((res,rej)=>{const s=document.createEle
 <script>
 const MEMBER_ID = {{ member_id | tojson }};
 const CAN_COMMENT = {{ can_comment | tojson }};
+const CAN_EDIT = {{ can_edit | tojson }};
 const LIFF_ID = {{ liff_id | tojson }};
 let idToken = null;
 let curDate = {{ initial_date | tojson }} || null;   // null なら今日を表示
@@ -269,10 +274,11 @@ function render(d){
           + '<div class="entry-sub"><span class="fpfc">P'+fmt(e.protein_g)
           + ' F'+fmt(e.fat_g)+' C'+fmt(e.carb_g)
           + (e.salt_g ? ' 塩'+e.salt_g+'g' : '')+'</span>'
-          + '<span class="acts">'
+          + (CAN_EDIT ? '<span class="acts">'
           + '<button class="btn btn-ghost btn-sm" onclick="startEdit(this,'+e.id+')">修正</button>'
           + '<button class="btn btn-ghost btn-sm" onclick="delEntry('+e.id+')">削除</button>'
-          + '</span></div></div>';
+          + '</span>' : '')
+          + '</div></div>';
       }
     }
     area.innerHTML = html;

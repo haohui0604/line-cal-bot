@@ -80,10 +80,13 @@ def day_page(request: Request, member_id: str = "", date: str = ""):
         can_comment = True
     else:
         can_comment = False
+    # トレーナーは閲覧とコメントのみ。記録の追加/修正/削除は会員本人だけ
+    can_edit = not bool(member_id)
     return templates.TemplateResponse("day_detail.html", {
         "request": request,
         "member_id": member_id or None,
         "can_comment": can_comment,
+        "can_edit": can_edit,
         "liff_id": settings.LIFF_ID,
         "initial_date": date,
     })
@@ -136,7 +139,12 @@ class EntryOpIn(BaseModel):
 def day_entry_ops(body: EntryOpIn, request: Request):
     uid, is_trainer, _viewer = _resolve_viewer(
         request, body.member_id, body.id_token)
-    source = "trainer_manual" if is_trainer else "user_report"
+    if is_trainer:
+        raise HTTPException(
+            status_code=403,
+            detail="記録の追加・修正・削除は会員本人のみ行えます"
+                   "（トレーナーは閲覧とコメントのみ）")
+    source = "user_report"
 
     if body.action == "add":
         if not (body.date and body.meal_slot and body.food_name
