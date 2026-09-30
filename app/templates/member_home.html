@@ -11,7 +11,7 @@
 function loadLiffSdk(){
   return new Promise((resolve, reject) => {
     const s = document.createElement("script");
-    s.src = "https://static.line-scdn.me/liff/edge/2/sdk.js";
+    s.src = "https://static.line-scdn.net/liff/edge/2/sdk.js";
     s.onload = () => resolve();
     s.onerror = () => reject(new Error("SDK download failed"));
     document.head.appendChild(s);
