@@ -1,15 +1,31 @@
-"""リッチメニューを作成して全ユーザーに適用する（1回だけ実行）。"""
+"""リッチメニューを作成して全ユーザーに適用する（1回だけ実行）.
+
+使い方:
+    python scripts/setup_rich_menu.py
+
+前提:
+- 環境変数 LINE_CHANNEL_ACCESS_TOKEN が設定済み
+- 環境変数 LIFF_ID が設定済み（マイページボタンに使用）
+- 2500x1686 のPNG画像 richmenu.png をこのリポジトリ直下に用意
+  （2x2の4分割。上から: マイページ / 初期設定 / AI人格設定 / 使い方）
+"""
+import os
 from linebot import LineBotApi
 from linebot.models import (RichMenu, RichMenuSize, RichMenuArea,
-                            RichMenuBounds, PostbackAction)
+                            RichMenuBounds, PostbackAction, URIAction)
 from app.config import settings
 
 api = LineBotApi(settings.LINE_CHANNEL_ACCESS_TOKEN)
 
+if not settings.LIFF_ID:
+    raise SystemExit("環境変数 LIFF_ID が未設定です")
 
-def area(x, y, label, data, display_text=None):
+liff_url = f"https://liff.line.me/{settings.LIFF_ID}"
+
+
+def pb_area(x, y, label, data, display_text=None):
     return RichMenuArea(
-        bounds=RichMenuBounds(x=x, y=y, width=1250, height=562),
+        bounds=RichMenuBounds(x=x, y=y, width=1250, height=843),
         action=PostbackAction(label=label, data=data,
                               display_text=display_text or label))
 
@@ -18,17 +34,22 @@ menu = RichMenu(
     size=RichMenuSize(width=2500, height=1686), selected=True,
     name="メインメニュー", chat_bar_text="メニュー",
     areas=[
-        area(   0,    0, "今日",     "cmd=daily",   "今日のレポート"),
-        area(1250,    0, "今週",     "cmd=weekly",  "今週のレポート"),
-        area(   0,  562, "今月",     "cmd=monthly", "今月のレポート"),
-        area(1250,  562, "初期設定", "cmd=setup"),
-        area(   0, 1124, "人格設定", "cmd=persona"),
-        area(1250, 1124, "体重を記録", "cmd=weight"),
+        # 左上: マイページ（LIFF=Web）
+        RichMenuArea(
+            bounds=RichMenuBounds(x=0, y=0, width=1250, height=843),
+            action=URIAction(label="マイページ", uri=liff_url)),
+        # 右上: 目的設定（目標体重・減塩・筋肉のウィザード）
+        pb_area(1250, 0, "目的設定", "cmd=goal"),
+        # 左下: AI人格設定（既存コマンド）
+        pb_area(0, 843, "AI人格設定", "cmd=persona", "人格設定"),
+        # 右下: 使い方（既存ヘルプ）
+        pb_area(1250, 843, "使い方", "cmd=help", "使い方"),
     ],
 )
 
 rid = api.create_rich_menu(rich_menu=menu)
-with open("richmenu.png", "rb") as f:          # 2500×1686 / PNG / 1MB以下
+with open("richmenu.png", "rb") as f:          # 2500x1686 / PNG / 1MB以下
     api.set_rich_menu_image(rid, "image/png", f.read())
 api.set_default_rich_menu(rid)
 print("done:", rid)
+print("マイページURL:", liff_url)

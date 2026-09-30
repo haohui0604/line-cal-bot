@@ -92,9 +92,12 @@ def day_page(request: Request, member_id: str = "", date: str = ""):
 # ---- データAPI ----
 
 class DayDataIn(BaseModel):
-    date: str = ""
+    date: Optional[str] = None        # null でも受ける（初回ロード時 422 対策）
     member_id: Optional[str] = None
     id_token: Optional[str] = None
+
+    class Config:
+        extra = "ignore"
 
 
 @router.post("/api/day/data")
@@ -112,6 +115,10 @@ def day_data(body: DayDataIn, request: Request):
 
 class EntryOpIn(BaseModel):
     action: str                       # add / edit / delete
+    # （member_id/id_token 等は下に定義）
+
+    class Config:
+        extra = "ignore"
     member_id: Optional[str] = None
     id_token: Optional[str] = None
     entry_id: Optional[int] = None

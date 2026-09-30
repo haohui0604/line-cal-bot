@@ -17,6 +17,7 @@ from app.services.db import (
     get_report_comment, save_report_comment,
 )
 from app.services.gym_db import fetch_active_directives
+from app.services.goals import context_line as goal_context_line
 from app.services.day_view import SLOT_JP
 
 logger = logging.getLogger(__name__)
@@ -82,6 +83,7 @@ def _generate(user_id: str, f: dict) -> str:
         raise RuntimeError("GEMINI_API_KEY 未設定")
     persona = load_user_persona(user_id)
     directives = fetch_active_directives(user_id)
+    goal_line = goal_context_line(user_id)
 
     dir_text = ""
     if directives:
@@ -99,6 +101,7 @@ def _generate(user_id: str, f: dict) -> str:
 - 消費: {f['burn']}kcal
 - 目標摂取: {f['goal'] if f['goal'] else '未設定'}kcal
 - 体重: {f['weight_kg'] if f['weight_kg'] else '不明'}kg
+- 目的・目標: {goal_line or '未設定'}
 - 食事内容: {', '.join(f['foods']) if f['foods'] else '記録なし'}
 {dir_text}
 

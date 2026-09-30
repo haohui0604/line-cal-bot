@@ -106,13 +106,21 @@
       x: { stacked: true }, y: { stacked: true, max: 100,
         ticks: { callback: v => v + "%" } } } }
   });
+  const wvals = (d.weight || []).filter(v => v != null);
+  let wopts = { responsive: true };
+  if (wvals.length) {
+    const wmin = Math.min(...wvals), wmax = Math.max(...wvals);
+    const pad = (wmax - wmin) * 0.1 || wmax * 0.02;
+    wopts.scales = { y: { min: +(wmin - pad).toFixed(1),
+                          max: +(wmax + pad).toFixed(1) } };
+  }
   new Chart(document.getElementById("weightChart"), {
     type: "line",
     data: { labels: d.weight_labels, datasets: [
       { label: "体重 kg", data: d.weight,
         borderColor: "#3b82f6", tension: .3, pointRadius: 2, spanGaps: true }
     ]},
-    options: { responsive: true }
+    options: wopts
   });
 })();
 </script>

@@ -20,6 +20,7 @@ from app.services.db import (
     fetch_recent_entries, delete_entry, delete_entries_by_date,
 )
 from app.services.calorie_calc import parse_record_line
+from app.services import goals as goal_svc
 from app.handlers.flex_builder import (
     summary_flex, weekly_chart_flex, monthly_summary_flex,
 )
@@ -263,6 +264,7 @@ def _build_context(user_id: str) -> dict:
         "remaining_protein_g": max(PROTEIN_TARGET_G - s["protein_g"], 0),
         "salt_g": s["salt_g"],
         "today_foods": fetch_today_food_names(user_id, _today()),
+        "goal": goal_svc.context_line(user_id),
         "weight_kg": lw["weight_kg"] if lw else None,
     }
 
@@ -383,6 +385,14 @@ def handle_text(user_id: str, text: str):
             if text in ("いいえ", "やめる", "キャンセル", "delete:no"):
                 _delete_pending.pop(user_id)
                 return TextSendMessage(text="削除をキャンセルしました")
+
+        # 0.04) 目的設定ウィザード
+        if text == "目的設定":
+            return goal_svc.start_wizard(user_id)
+        if goal_svc.in_wizard(user_id):
+            out = goal_svc.handle_step(user_id, text)
+            if out is not None:
+                return out
 
         # 0) LLM 推定の確定/取消（ボタン or テキスト）
         if user_id in _pending and text in (

@@ -18,6 +18,7 @@ CMD_MAP = {
     "monthly": "今月のレポート",
     "history": "履歴",
     "setup":   "初期設定",
+    "goal":    "目的設定",
     "persona": "人格設定",
     "help":    "ヘルプ",
 }

@@ -158,13 +158,22 @@ async function main(){
     ]},
     options:{ responsive:true, interaction:{mode:"index"} }
   });
+  // 体重: データの min-10% 〜 max+10% の範囲に絞って変動を見やすくする
+  const wvals = (s.weight || []).filter(v => v != null);
+  let wopts = { responsive:true };
+  if (wvals.length) {
+    const wmin = Math.min(...wvals), wmax = Math.max(...wvals);
+    const pad = (wmax - wmin) * 0.1 || wmax * 0.02;  // 変動が小さい場合は2%確保
+    wopts.scales = { y: { min: +(wmin - pad).toFixed(1),
+                          max: +(wmax + pad).toFixed(1) } };
+  }
   new Chart(document.getElementById("weightChart"), {
     type:"line",
     data:{ labels:s.weight_labels, datasets:[
       { label:"体重 kg", data:s.weight, borderColor:"#3b82f6",
         tension:.3, pointRadius:2, spanGaps:true }
     ]},
-    options:{ responsive:true }
+    options: wopts
   });
 
   new Chart(document.getElementById("pfcChart"), {
