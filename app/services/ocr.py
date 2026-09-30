@@ -14,6 +14,7 @@ import time
 import httpx
 
 from app.config import settings
+from app.services.dates import today_jst
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,7 @@ OCR_PROMPT = """\
   "total_burn_kcal": "その日の総消費カロリー (数値)",
   "active_kcal": "アクティブエネルギー/運動消費 (数値。不明ならnull)",
   "resting_kcal": "安静時消費/基礎代謝 (数値。不明ならnull)",
+  "record_date": "画像内に表示されている対象日付 (YYYY-MM-DD)。無ければnull",
 
   "confidence": "confirmed" | "estimated",
   "reaction": "短いポジティブな一言 (photo/weight/activity の場合のみ、40字以内)"
@@ -78,6 +80,8 @@ OCR_PROMPT = """\
     resting は null のまま、total_burn_kcal は active の値を入れる
   - 歩数・距離だけの表示は本モードとしない (読み取れるkcal値が無い場合は
     mode=photo, name="不明", kcal=0 を返す)
+  - 画面に日付 (例: 9/29, 2026-09-29) や「昨日」等の表示があれば record_date に
+    その日付を YYYY-MM-DD で入れる。「昨日」なら今日の前日。読み取れなければ null
 - 食事や健康計測に無関係な画像: mode=photo, name="不明", kcal=0,
   weight_kg=null として返す。
 """
@@ -119,7 +123,7 @@ def extract_label(image_bytes: bytes, mime_type: str = "image/jpeg") -> str:
     payload = {
         "contents": [{
             "parts": [
-                {"text": OCR_PROMPT},
+                {"text": OCR_PROMPT + f"\n\n（参考: 今日は {today_jst()} です）"},
                 {"inline_data": {
                     "mime_type": mime_type,
                     "data": base64.b64encode(image_bytes).decode("ascii"),

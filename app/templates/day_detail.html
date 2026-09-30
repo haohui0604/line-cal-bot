@@ -131,13 +131,13 @@ function loadLiffSdk(){return new Promise((res,rej)=>{const s=document.createEle
             <option value="snack">間食</option>
           </select>
           <input id="addName" placeholder="食品名（例: 鶏むね）">
-          <input id="addKcal" type="number" placeholder="kcal（必須）">
+          <input id="addKcal" type="number" placeholder="kcal（空欄でAI推定）">
           <input id="addP" type="number" step="0.1" placeholder="P g（空欄でAI推定）">
           <input id="addF" type="number" step="0.1" placeholder="F g">
           <input id="addC" type="number" step="0.1" placeholder="C g">
         </div>
         <button class="btn" style="margin-top:8px" onclick="addEntry()">追加</button>
-        <div class="muted">※ PFCを空欄にするとAIが推定します</div>
+        <div class="muted">※ kcal・PFCは空欄にするとAIが推定します</div>
       </details>
       {% else %}
       <p class="muted" style="margin-top:8px">記録の追加・修正・削除は会員本人のみ行えます（トレーナーは閲覧とコメントのみ）。</p>
@@ -201,6 +201,7 @@ function shift(days){
 
 async function load(dateStr_){
   if(dateStr_) curDate = dateStr_;
+  document.getElementById("err").style.display="none";  // 前の操作のエラーを消す
   document.getElementById("loading").style.display="block";
   document.getElementById("app").style.display="none";
   const d = await api("/api/day/data", curDate ? {date: curDate} : {});
@@ -268,7 +269,11 @@ function render(d){
       html += '<div class="slot-head"><span>'+SLOT_JP[s]+'</span>'
         + '<span class="muted">'+fmt(g.kcal)+' kcal</span></div>';
       for(const e of g.foods){
-        html += '<div class="entry" data-slot="'+s+'" data-id="'+e.id+'">'
+        html += '<div class="entry" data-slot="'+s+'" data-id="'+e.id+'"'
+          + ' data-p="'+(e.protein_g==null?"":e.protein_g)+'"'
+          + ' data-f="'+(e.fat_g==null?"":e.fat_g)+'"'
+          + ' data-c="'+(e.carb_g==null?"":e.carb_g)+'"'
+          + ' data-salt="'+(e.salt_g==null?"":e.salt_g)+'">'
           + '<div class="entry-main"><span class="fname">'+esc(e.food_name)+'</span>'
           + '<span class="fkcal">'+fmt(e.kcal)+' kcal</span></div>'
           + '<div class="entry-sub"><span class="fpfc">P'+fmt(e.protein_g)
@@ -305,11 +310,14 @@ async function addEntry(){
     action:"add", date: curDate,
     meal_slot: document.getElementById("addSlot").value,
     food_name: document.getElementById("addName").value.trim(),
-    kcal: parseFloat(document.getElementById("addKcal").value),
+    kcal: num("addKcal"),
   };
   body.protein_g=num("addP"); body.fat_g=num("addF"); body.carb_g=num("addC");
-  if(!body.food_name || isNaN(body.kcal)){ showErr("食品名とkcalは必須です"); return; }
-  try{ await api("/api/day/entries", body); load(); }
+  if(!body.food_name){ showErr("食品名は必須です（kcalは空欄ならAIが推定します）"); return; }
+  try{ await api("/api/day/entries", body);
+    ["addName","addKcal","addP","addF","addC"].forEach(
+      i=>{document.getElementById(i).value="";});
+    load(); }
   catch(e){ showErr("追加に失敗: "+e.message); }
 }
 
@@ -334,6 +342,9 @@ function startEdit(btn, id){
     + '<button class="btn btn-ghost btn-sm" style="margin-top:6px" onclick="load()">取消</button></div>';
   document.getElementById("e_name").value = name;
   document.getElementById("e_kcal").value = kcal;
+  document.getElementById("e_p").value = box.dataset.p || "";
+  document.getElementById("e_f").value = box.dataset.f || "";
+  document.getElementById("e_c").value = box.dataset.c || "";
 }
 
 async function saveEdit(btn, id){

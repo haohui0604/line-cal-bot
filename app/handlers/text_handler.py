@@ -491,7 +491,9 @@ def handle_text(user_id: str, text: str):
             ))
 
         # 0.55) 初期設定ウィザード
-        if text in ("初期設定", "セットアップ"):
+        if text == "初期設定":
+            return goal_svc.start_wizard(user_id)
+        if text == "セットアップ":
             _setup_pending[user_id] = {"step": 1, "data": {}}
             return TextSendMessage(text=(
                 "🛠 初期設定を始めます（いつでも『やめる』で中止）\n\n"

@@ -149,15 +149,18 @@ def day_entry_ops(body: EntryOpIn, request: Request):
     source = "user_report"
 
     if body.action == "add":
-        if not (body.date and body.meal_slot and body.food_name
-                and body.kcal is not None):
+        if not (body.date and body.meal_slot and body.food_name):
             raise HTTPException(status_code=400,
-                                detail="日付・区分・食品名・kcalは必須です")
-        return add_entry_manual(
-            uid, date=body.date, meal_slot=body.meal_slot,
-            food_name=body.food_name.strip(), kcal=body.kcal,
-            protein_g=body.protein_g, fat_g=body.fat_g,
-            carb_g=body.carb_g, salt_g=body.salt_g, source=source)
+                                detail="日付・区分・食品名は必須です"
+                                       "（kcalは空欄ならAIが推定します）")
+        try:
+            return add_entry_manual(
+                uid, date=body.date, meal_slot=body.meal_slot,
+                food_name=body.food_name.strip(), kcal=body.kcal,
+                protein_g=body.protein_g, fat_g=body.fat_g,
+                carb_g=body.carb_g, salt_g=body.salt_g, source=source)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
     if body.action == "edit":
         if not (body.entry_id and body.meal_slot and body.food_name

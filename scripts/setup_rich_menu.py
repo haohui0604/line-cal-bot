@@ -47,9 +47,28 @@ menu = RichMenu(
     ],
 )
 
+# ---- 既存リッチメニューの整理 ----
+# OAM(GUI)では API 作成のメニューを編集/削除できないため、
+# 既存メニューはここで全て解除・削除してから新しいものを既定にする。
+try:
+    api.cancel_default_rich_menu()   # 既定解除（無ければ何も起きない）
+except Exception:
+    pass
+
+for rm in api.get_rich_menu_list():
+    try:
+        api.delete_rich_menu(rm.rich_menu_id)
+        print("deleted old menu:", rm.rich_menu_id, getattr(rm, "name", ""))
+    except Exception as e:
+        print("delete failed:", rm.rich_menu_id, e)
+
 rid = api.create_rich_menu(rich_menu=menu)
-with open("assets/richmenu.png", "rb") as f:          # 2500x1686 / PNG / 1MB以下
-    api.set_rich_menu_image(rid, "image/png", f.read())
+_img_path, _img_type = ("assets/richmenu.jpg", "image/jpeg") \
+    if __import__("os").path.exists("assets/richmenu.jpg") \
+    else ("assets/richmenu.png", "image/png")
+print("using image:", _img_path, _img_type)
+with open(_img_path, "rb") as f:          # 2500x1686 / PNG / 1MB以下
+    api.set_rich_menu_image(rid, _img_type, f.read())
 api.set_default_rich_menu(rid)
 print("done:", rid)
 print("マイページURL:", liff_url)

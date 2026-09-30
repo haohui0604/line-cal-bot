@@ -60,11 +60,13 @@ def add_entry_manual(user_id: str, *, date: str, meal_slot: str,
     """手動追加。PFCが未指定ならAI推定で補完を試みる."""
     confidence = "confirmed"
     estimated = False
-    if protein_g is None or fat_g is None or carb_g is None:
+    if (kcal is None or protein_g is None or fat_g is None
+            or carb_g is None):
         try:
             from app.services.llm import estimate_food_single
             item = {"food_name": food_name, "quantity_g": None}
             estimate_food_single(item)  # item を in-place 更新
+            kcal = kcal if kcal is not None else item.get("kcal")
             protein_g = protein_g if protein_g is not None else item.get("protein_g")
             fat_g = fat_g if fat_g is not None else item.get("fat_g")
             carb_g = carb_g if carb_g is not None else item.get("carb_g")
@@ -72,7 +74,10 @@ def add_entry_manual(user_id: str, *, date: str, meal_slot: str,
             confidence = "estimated"
             estimated = True
         except Exception:
-            logger.exception("PFC estimation failed; saving without PFC")
+            logger.exception("kcal/PFC estimation failed")
+    if kcal is None:
+        raise ValueError(
+            "カロリーを推定できませんでした。kcal を入力してください")
     save_entry(
         user_id=user_id, date=date, meal_slot=meal_slot, food_name=food_name,
         kcal=kcal, protein_g=protein_g, fat_g=fat_g, carb_g=carb_g,

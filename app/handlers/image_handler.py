@@ -77,15 +77,24 @@ def handle_image(user_id: str, message_id: str, line_bot_api):
             total = (float(active or 0) + float(resting or 0)) or None
         if total is None:
             total = float(active)
+        rec_date = today_jst()
+        rd = data.get("record_date")
+        if rd:
+            try:
+                rd = date.fromisoformat(str(rd)[:10]).isoformat()
+                if rd <= rec_date:   # 未来日は誤読として無視
+                    rec_date = rd
+            except (ValueError, TypeError):
+                pass
         save_activity(
-            user_id=user_id, date=today_jst(),
+            user_id=user_id, date=rec_date,
             total_kcal=float(total),
             active_kcal=float(active) if active else None,
             resting_kcal=float(resting) if resting else None,
             source_type="ocr_image",
             ocr_image_url=None,
         )
-        return TextSendMessage(text=_make_activity_reply(data))
+        return TextSendMessage(text=_make_activity_reply(data, rec_date))
 
     # ---- 無関係画像ガード ----
     if (data.get("kcal") in (0, None)) and data.get("name") in ("不明", None):
@@ -171,9 +180,9 @@ def _make_weight_reply(d):
     return f"{head}{extra_line}{tail}"
 
 
-def _make_activity_reply(d):
+def _make_activity_reply(d, rec_date):
     reaction = (d.get("reaction") or "").strip()
-    head = f"🏃 消費カロリーを記録: 総計 {float(d['total_burn_kcal']):.0f}kcal"
+    head = f"🏃 {rec_date} の消費カロリーを記録: 総計 {float(d['total_burn_kcal']):.0f}kcal"
     extras = []
     if d.get("active_kcal"):
         extras.append(f"活動 {d['active_kcal']:.0f}kcal")
