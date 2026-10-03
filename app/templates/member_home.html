@@ -74,6 +74,11 @@ function loadLiffSdk(){
          📅 日別の詳細を見る（記録の編集・コメント）</a>
     </div>
 
+    <div class="card" style="display:flex;justify-content:space-between;align-items:center;padding:10px 16px">
+      <a id="pgPrev" href="?offset=0" style="text-decoration:none;font-weight:700;font-size:20px">＜</a>
+      <span id="pgRange" class="muted" style="font-size:13px"></span>
+      <a id="pgNext" href="?offset=1" style="text-decoration:none;font-weight:700;font-size:20px">＞</a>
+    </div>
     <div class="card">
       <b>📈 カロリー推移（14日）</b>
       <canvas id="calChart" height="160"></canvas>
@@ -108,6 +113,13 @@ function showErr(msg){
   const e = document.getElementById("err");
   e.textContent = msg; e.style.display = "block";
   document.getElementById("loading").style.display = "none";
+  if (!document.getElementById("reloadBtn")) {          // 行き止まりにしない
+    const b = document.createElement("button");
+    b.id = "reloadBtn"; b.textContent = "再読み込み";
+    b.style.cssText = "margin-top:8px;padding:6px 14px;cursor:pointer";
+    b.onclick = () => location.reload();
+    e.parentNode.insertBefore(b, e.nextSibling);
+  }
 }
 
 async function api(path){
@@ -115,6 +127,16 @@ async function api(path){
     method: "POST", headers: {"Content-Type": "application/json"},
     body: JSON.stringify({id_token: idToken})
   });
+  if(res.status === 401){
+    // IDトークンの期限切れ。1回だけ取り直して再ログインさせる
+    if(!_reloginTried){
+      _reloginTried = true;
+      try { sessionStorage.removeItem("liff_login_tried_" + LIFF_ID); } catch(_) {}
+      liff.login({redirectUri: location.href});
+      throw new Error("認証の有効期限が切れました。再読み込みしてください");
+    }
+    throw new Error("401 認証エラー。再読み込みしてください");
+  }
   if(!res.ok){
     let detail = "";
     try { detail = (await res.json()).detail || ""; } catch(_) {}
@@ -125,6 +147,25 @@ async function api(path){
 }
 
 function fmt(v){ return Math.round(v || 0); }
+
+// ---- ログイン状態の取り直し（無限ループと行き止まりを防ぐ） ----
+let _reloginTried = false;
+async function ensureLogin(){
+  idToken = (liff.getIDToken && liff.getIDToken()) || null;
+  if (idToken) return true;
+  let tried = false;
+  try { tried = sessionStorage.getItem("liff_login_tried_" + LIFF_ID) === "1"; } catch(_) {}
+  if (!liff.isLoggedIn() && !tried) {
+    try { sessionStorage.setItem("liff_login_tried_" + LIFF_ID, "1"); } catch(_) {}
+    liff.login({redirectUri: location.href});   // 直後に isLoggedIn() が false でも再入しない
+    return false;
+  }
+  try { sessionStorage.removeItem("liff_login_tried_" + LIFF_ID); } catch(_) {}
+  showErr("ログイン情報を取得できませんでした。\n"
+    + "LINEアプリのトークから開き直すか、下の「再読み込み」を押してください。\n"
+    + "(isInClient=" + liff.isInClient() + " / loggedIn=" + liff.isLoggedIn() + ")");
+  return false;
+}
 
 async function main(){
   try {
@@ -142,12 +183,16 @@ async function main(){
             " / LIFF_ID=" + LIFF_ID);
     return;
   }
-  if(!liff.isLoggedIn()){ liff.login(); return; }
-  idToken = liff.getIDToken();
-  if(!idToken){ showErr("IDトークンを取得できませんでした" +
-    "（LIFFのScopeに openid が必要です）"); return; }
+  if(!await ensureLogin()) return;
 
-  const s = await api("/api/me/summary");
+  const _off = Math.max(0, Math.min(3, parseInt(new URLSearchParams(location.search).get("offset") || "0", 10) || 0));
+  const s = await api("/api/me/summary", {days: 14, offset: _off});
+  const _pg = document.getElementById("pgRange");
+  if(_pg){ _pg.textContent = (s.window_start||"") + " 〜 " + (s.window_end||"");
+    document.getElementById("pgPrev").setAttribute("href", "?offset=" + Math.max(0, _off-1));
+    document.getElementById("pgNext").setAttribute("href", "?offset=" + (_off+1));
+    if(_off<=0) document.getElementById("pgPrev").style.visibility="hidden";
+    if(_off>=3) document.getElementById("pgNext").style.visibility="hidden"; }
   document.getElementById("tIntake").textContent = fmt(s.today.intake_kcal);
   document.getElementById("tBurn").textContent =
     fmt(s.today.burn_kcal || s.today.burn);
@@ -194,7 +239,7 @@ async function main(){
   });
 
   // コメント
-  const c = await api("/api/me/comments");
+  const c = await api("/api/me/comments", {cm_offset: 0});
   const pc = document.getElementById("paneComments");
   pc.innerHTML = c.comments.length ? "" : '<p class="muted">まだコメントはありません。</p>';
   for(const cm of c.comments){
@@ -207,6 +252,34 @@ async function main(){
       '</span><div style="margin-top:4px;white-space:pre-wrap"></div>';
     div.querySelector("div").textContent = cm.body;
     pc.appendChild(div);
+  }
+  {
+    let btn = document.getElementById("cmMore");
+    if(!btn){
+      btn = document.createElement("button");
+      btn.id = "cmMore"; btn.className = "btn btn-ghost btn-sm";
+      btn.style.marginTop = "8px"; btn.textContent = "もっと見る";
+      btn.onclick = async () => {
+        const off = parseInt(btn.dataset.off || "0", 10);
+        const more = await api("/api/me/comments", {cm_offset: off});
+        for(const cm of more.comments){
+          const div = document.createElement("div");
+          div.style.cssText = "border-bottom:1px solid var(--line);padding:10px 0";
+          const badge = cm.author_type === "trainer"
+            ? '<span class="badge">トレーナー</span>'
+            : '<span class="badge badge-green">AIコーチ</span>';
+          div.innerHTML = badge + ' <span class="muted">' + (cm.created_at||"") +
+            '</span><div style="margin-top:4px;white-space:pre-wrap"></div>';
+          div.querySelector("div").textContent = cm.body;
+          pc.insertBefore(div, btn);
+        }
+        btn.dataset.off = off + more.comments.length;
+        if(!more.has_more){ btn.style.display = "none"; }
+      };
+      pc.appendChild(btn);
+    }
+    btn.dataset.off = c.comments.length;
+    btn.style.display = c.has_more ? "" : "none";
   }
 
   // 履歴

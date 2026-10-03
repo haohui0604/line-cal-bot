@@ -120,7 +120,7 @@ def reject(request: Request, membership_id: int):
 # ---- 会員詳細 ----
 
 @router.get("/trainer/members/{member_id}", response_class=HTMLResponse)
-def member_detail(request: Request, member_id: str):
+def member_detail(request: Request, member_id: str, cm_offset: int = 0):
     staff_id = _require_staff(request)
     _require_member_access(staff_id, member_id)
     u = gym_db.get_user(member_id) or {}
@@ -131,7 +131,11 @@ def member_detail(request: Request, member_id: str):
         "member_name": u.get("display_name") or member_id,
         "summary": fetch_day_summary(member_id, today),
         "entries": fetch_recent_entries(member_id, limit=30),
-        "comments": gym_db.fetch_comments_for_user(member_id, limit=30),
+        "comments": gym_db.fetch_comments_for_user(member_id, limit=30,
+                                                   offset=max(0, cm_offset)),
+        "cm_offset": max(0, cm_offset),
+        "cm_total": gym_db.count_comments_for_user(member_id),
+        "cm_has_more": gym_db.count_comments_for_user(member_id) > max(0, cm_offset) + 30,
         "today": today,
     })
 

@@ -80,6 +80,40 @@ def get_conn():
         conn.close()
 
 
+# SQLite には ALTER TABLE ... ADD COLUMN IF NOT EXISTS が無いため、
+# 後から足したカラムはここで「無いときだけ足す」形で冪等に適用する。
+# init_db はデプロイやテストのたびに何度も呼ばれるので、
+# 2回目以降に落ちてはいけない（migrations/*.sql の ALTER は再実行で失敗する）。
+ADDED_COLUMNS = {
+    # 目標PFCのマスタ（たんぱく質は 008、脂質・炭水化物を後から追加）
+    "goal_profiles": {"fat_target_g": "REAL", "carb_target_g": "REAL"},
+}
+
+
+def _ensure_columns(c) -> None:
+    """定義にあって実テーブルに無いカラムだけを追加する."""
+    for table, cols in ADDED_COLUMNS.items():
+        try:
+            rows = c.execute(f"PRAGMA table_info({table})").fetchall()
+        except Exception:
+            logger.exception("PRAGMA table_info failed: %s", table)
+            continue
+        have = set()
+        for r in rows:
+            try:
+                have.add(r["name"])
+            except (TypeError, KeyError, IndexError):
+                have.add(r[1])
+        for name, decl in cols.items():
+            if name in have:
+                continue
+            try:
+                c.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+                logger.info("added column: %s.%s", table, name)
+            except Exception:
+                logger.exception("ALTER TABLE failed: %s.%s", table, name)
+
+
 def init_db():
     """migrations/*.sql をファイル名順(001→002→…)に冪等適用する."""
     import glob
@@ -91,6 +125,7 @@ def init_db():
     with get_conn() as c:
         for f in files:
             c.executescript(Path(f).read_text(encoding="utf-8"))
+        _ensure_columns(c)
     logger.info("migrations applied: %s", [Path(f).name for f in files])
 
 

@@ -1,5 +1,6 @@
 """テキスト入力 → commands / records / summary / LLM chat 振り分け."""
 import logging
+import time
 import re
 from datetime import timedelta
 from app.handlers.flex_builder import daily_flex
@@ -181,7 +182,7 @@ _PERSONA_DEFAULT_MAP = {
     "bot_pronoun": "わたし",
 }
 
-_SLOT_JP = {"breakfast": "朝", "lunch": "昼", "dinner": "夜", "snack": "間食"}
+_SLOT_JP = {"breakfast": "朝", "lunch": "昼", "dinner": "夜", "snack": "間食", "night": "夜食", }
 
 
 def _slot_jp(slot: str) -> str:
@@ -360,7 +361,143 @@ def _finish_setup(user_id: str, data: dict, months):
     return TextSendMessage(text="\n".join(lines))
 
 
+# ---- 写真アップ後の「いつの食事か」選択 ----
+
+SLOT_PICK_TIMEOUT_SEC = 900  # 15分
+
+
+def _date_jp(d: str) -> str:
+    from app.services.dates import today_jst, yesterday_jst
+    if d == today_jst():
+        return "今日"
+    if d == yesterday_jst():
+        return "昨日"
+    return d or "今日"
+
+
+def _confirm_pending_message(p: dict, user_id: str):
+    from linebot.models import TextSendMessage
+    foods = p.get("foods") or []
+    names = "、".join((f.get("name") or "未名") for f in foods)
+    total = sum(float(f.get("kcal") or 0) for f in foods)
+    d = p.get("date") or _today()
+    return TextSendMessage(
+        text=(f"📷 {_date_jp(d)}の{_slot_jp(p.get('meal_slot') or 'snack')}として記録します。\n"
+              f"{names}\n合計 約{int(round(total))} kcal\n\nこの内容で記録しますか？"),
+        quick_reply=qr(pb("✅ 記録する", "cmd=confirm_yes", "記録する"),
+                       pb("キャンセル", "cmd=confirm_no", "キャンセル")))
+
+
+def sweep_expired_pendings() -> dict:
+    """放置（15分超）の写真をまとめて確定する。keepalive から定期実行される.
+
+    返り値: {user_id: 通知文}（確定した分だけ）。
+    """
+    out = {}
+    for uid in list(_pending.keys()):
+        n = finalize_pending(uid)
+        if n:
+            out[uid] = n
+    return out
+
+
+def handle_slot_choice(user_id: str, payload: str):
+    """写真アップ後の「いつの食事か」ボタン（postback slot=...）を処理する."""
+    from linebot.models import TextSendMessage
+    payload = (payload or "").strip()
+    if payload == "cancel":
+        # 「その他」の入力待ち中でもキャンセルできる
+        p = _pending.pop(user_id, None)
+        if not p:
+            return TextSendMessage(
+                text="キャンセルする写真がありません（すでに確定済みか、キャンセル済みです）。")
+        return TextSendMessage(text="📷 写真の記録をキャンセルしました。何も登録していません。")
+    p = _pending.get(user_id)
+    if not p:
+        return TextSendMessage(text="選択待ちの写真がありません。もう一度写真を送ってください。")
+    if payload == "other":
+        p["awaiting_other"] = True
+        return TextSendMessage(text=(
+            "いつの食事か、日付と区分を入力してください。\n"
+            "例: 「おとといのひる」「2日前の夜食」「10/2 昼食」「昨日の朝」\n"
+            "（うまく読み取れないときは、もう一度お願いします）"))
+    try:
+        off_s, slot = payload.split(":", 1)
+        off = int(off_s)
+    except Exception:
+        return TextSendMessage(text="選択を読み取れませんでした。もう一度ボタンを押してください。")
+    from app.services.dates import today_jst, yesterday_jst
+    p["meal_slot"] = slot or "snack"
+    p["date"] = today_jst() if off == 0 else yesterday_jst()
+    p["awaiting_slot"] = False
+    p["awaiting_other"] = False
+    return _confirm_pending_message(p, user_id)
+
+
+def _resolve_other_slot(user_id: str, text: str):
+    """「その他」選択後のフリーテキストを解釈して確定確認を返す."""
+    from linebot.models import TextSendMessage
+    p = _pending.get(user_id)
+    if not p:
+        return None
+    from app.services.meal_when import parse_meal_when
+    d, slot = parse_meal_when(text)
+    if not d or not slot:
+        miss = []
+        if not d:
+            miss.append("日付（今日／昨日／おととい／2日前／10/2 など）")
+        if not slot:
+            miss.append("区分（朝食／昼食／夕食／間食／夜食）")
+        return TextSendMessage(text=(
+            "うまく読み取れませんでした。" + "と".join(miss) + "を入れてください。\n"
+            "例: 「おとといのひる」「2日前の夜食」「10/2 昼食」"))
+    p["date"] = d
+    p["meal_slot"] = slot
+    p["awaiting_other"] = False
+    p["awaiting_slot"] = False
+    return _confirm_pending_message(p, user_id)
+
+
+def finalize_pending(user_id: str, incoming_text: str = None):
+    """区分未選択の写真を確定する（放置15分／別メッセージ時は「今日の間食」）.
+
+    返り値: 確定通知の文言（確定しなければ None）。webhook が返信の先頭に足す。
+    """
+    p = _pending.get(user_id)
+    if not p:
+        return None
+    if p.get("awaiting_other"):
+        return None                      # フリーテキスト入力を待っている
+    t = (incoming_text or "").strip()
+    if t in ("はい", "いいえ", "記録する", "キャンセル"):
+        return None                      # 通常の確認フローに任せる
+    age = time.time() - float(p.get("created_at") or 0)
+    if p.get("awaiting_slot") and age < SLOT_PICK_TIMEOUT_SEC:
+        return None                      # まだ選択待ち（15分以内）
+    chosen = not p.get("awaiting_slot")
+    p = _pending.pop(user_id, None)
+    if not p:
+        return None
+    foods = p.get("foods") or []
+    try:
+        _save_foods(user_id, foods, p.get("meal_slot") or "snack", p.get("date"))
+    except Exception:
+        logging.getLogger(__name__).exception("finalize_pending failed")
+        return None
+    total = int(round(sum(float(f.get("kcal") or 0) for f in foods)))
+    d = p.get("date") or _today()
+    slot_jp = _slot_jp(p.get("meal_slot") or "snack")
+    head = "⏱ 食事区分が選ばれなかったので" if not chosen else "📷 写真の記録を確定しました"
+    return (f"{head}、{_date_jp(d)}の{slot_jp}として登録しました。"
+            f"（{len(foods)}品・約{total} kcal）")
+
+
 def handle_text(user_id: str, text: str):
+    _p = _pending.get(user_id)
+    if _p and _p.get("awaiting_other"):
+        _r = _resolve_other_slot(user_id, text)
+        if _r is not None:
+            return _r
     try:
         text = text.strip()
         if not text:

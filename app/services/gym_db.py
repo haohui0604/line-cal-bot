@@ -204,12 +204,22 @@ def add_comment(*, user_id: str, body: str, author_type: str,
         return cur.lastrowid
 
 
-def fetch_comments_for_user(user_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+def fetch_comments_for_user(user_id: str, limit: int = 50,
+                           offset: int = 0) -> List[Dict[str, Any]]:
+    """コメントを新しい順に取得（ページング用に offset を受ける）."""
     with get_conn() as c:
         rows = c.execute(
             "SELECT * FROM comments WHERE user_id=?"
-            " ORDER BY created_at DESC LIMIT ?", (user_id, limit)).fetchall()
+            " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+            (user_id, limit, max(0, offset))).fetchall()
     return [dict(r) for r in rows]
+
+
+def count_comments_for_user(user_id: str) -> int:
+    with get_conn() as c:
+        r = c.execute("SELECT COUNT(*) AS n FROM comments WHERE user_id=?",
+                      (user_id,)).fetchone()
+    return int((r["n"] if r else 0) or 0)
 
 
 def fetch_active_directives(user_id: str, days: int = 28) -> List[Dict[str, Any]]:

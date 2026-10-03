@@ -26,6 +26,10 @@ ACTIVITY_FACTOR = 1.4          # 活動量データが無い人の推定係数�
 MIN_TARGET_KCAL = 1000.0       # 安全側の下限
 DEFAULT_SALT_G = 6.0
 PROTEIN_PER_KG = 1.6
+FAT_RATIO = 0.25               # 目標kcalのうち脂質でとる目安の割合
+FAT_KCAL_PER_G = 9
+PROTEIN_KCAL_PER_G = 4
+CARB_KCAL_PER_G = 4
 
 _pending: dict = {}            # user_id -> {"step": ..., ...}
 
@@ -57,7 +61,11 @@ def get_profile(user_id: str) -> Optional[dict]:
 
 
 def context_line(user_id: str) -> str:
-    """コメント生成のコンテキストに載せる1行。未設定なら空文字."""
+    """コメント生成のコンテキストに載せる1行。未設定なら空文字.
+
+    目的に加えて、目安となる目標PFC（g）も添える。これがあることで
+    AIコメントが「脂質が多い／たんぱく質が足りない」を根拠つきで書ける。
+    """
     p = get_profile(user_id)
     if not p or not p.get("goal_mode"):
         return ""
@@ -69,14 +77,106 @@ def context_line(user_id: str) -> str:
             s += f"（目標 {tw}kg / {p.get('goal_days') or '?'}日）"
         if kcal:
             s += f"。1日の目標摂取 {kcal:.0f}kcal"
-        return s
-    if p["goal_mode"] == "salt":
-        return f"目的: 減塩（食塩目標 {p.get('salt_target_g') or DEFAULT_SALT_G}g/日）"
-    if p["goal_mode"] == "muscle":
+    elif p["goal_mode"] == "salt":
+        s = f"目的: 減塩（食塩目標 {p.get('salt_target_g') or DEFAULT_SALT_G}g/日）"
+    elif p["goal_mode"] == "muscle":
         pt = p.get("protein_target_g")
-        return f"目的: 筋肉増量（たんぱく質目標 {pt:.0f}g/日）" if pt \
-            else "目的: 筋肉増量（たんぱく質重視）"
-    return ""
+        s = (f"目的: 筋肉増量（たんぱく質目標 {pt:.0f}g/日）" if pt
+             else "目的: 筋肉増量（たんぱく質重視）")
+    else:
+        return ""
+    t = pfc_targets(user_id, target_kcal=p.get("calc_target_kcal"))
+    if t:
+        s += "。目安PFC " + " / ".join(
+            f"{name}{v:.0f}g" for name, v in
+            (("P", t.get("protein_g")), ("F", t.get("fat_g")),
+             ("C", t.get("carb_g"))) if v)
+    return s
+
+
+# ---------- 目標PFC（マスタ＋目安計算） ----------
+
+def _table_cols(table: str) -> set:
+    """既存DBに無いカラムで落ちないよう、実際に存在する列だけを返す."""
+    try:
+        with get_conn() as c:
+            rows = c.execute(f"PRAGMA table_info({table})").fetchall()
+    except Exception:
+        logger.exception("PRAGMA table_info failed: %s", table)
+        return set()
+    cols = set()
+    for r in rows:
+        try:
+            cols.add(r["name"])
+        except (TypeError, KeyError, IndexError):
+            cols.add(r[1])
+    return cols
+
+
+def save_pfc_targets(user_id: str, *, fat_target_g=None,
+                     carb_target_g=None) -> None:
+    """目標PFC（脂質・炭水化物）を明示的に保存する.
+
+    カラムが無いDB（未マイグレーション）でも壊れないよう、
+    存在するカラムだけを更新する。
+    """
+    cols = _table_cols("goal_profiles")
+    sets = {}
+    if fat_target_g is not None and "fat_target_g" in cols:
+        sets["fat_target_g"] = float(fat_target_g)
+    if carb_target_g is not None and "carb_target_g" in cols:
+        sets["carb_target_g"] = float(carb_target_g)
+    if not sets:
+        logger.info("save_pfc_targets skipped (columns missing): %s", user_id)
+        return
+    with get_conn() as c:
+        c.execute("INSERT INTO goal_profiles (user_id) VALUES (?)"
+                  " ON CONFLICT(user_id) DO NOTHING", (user_id,))
+        assigns = ", ".join(f"{k}=?" for k in sets)
+        c.execute(f"UPDATE goal_profiles SET {assigns},"
+                  " updated_at=CURRENT_TIMESTAMP WHERE user_id=?",
+                  (*sets.values(), user_id))
+
+
+def pfc_targets(user_id: str, target_kcal: Optional[float] = None
+                ) -> Optional[dict]:
+    """その日の目標PFC(g)を返す。根拠が無ければ None.
+
+    優先順位:
+      - 明示設定（goal_profiles.fat_target_g / carb_target_g / protein_target_g）
+      - 目安計算: たんぱく質 = 体重 × 1.6g、脂質 = 目標kcal × 25%、
+        炭水化物 = 残りkcal（目標 − P − F）
+    """
+    p = get_profile(user_id) or {}
+    kcal = target_kcal or p.get("calc_target_kcal")
+    if not kcal:
+        try:
+            from app.services.db import get_goal
+            kcal = get_goal(user_id, today_jst())
+        except Exception:
+            kcal = None
+    kcal = float(kcal) if kcal else None
+    cols = _table_cols("goal_profiles")
+    weight = _latest_weight(user_id)
+    protein = p.get("protein_target_g") if "protein_target_g" in cols else None
+    if not protein and weight:
+        protein = round(weight * PROTEIN_PER_KG, 1)
+    fat = p.get("fat_target_g") if "fat_target_g" in cols else None
+    carb = p.get("carb_target_g") if "carb_target_g" in cols else None
+    if not fat and kcal:
+        fat = round(kcal * FAT_RATIO / FAT_KCAL_PER_G, 1)
+    if carb is None and kcal:
+        rest = (kcal - (protein or 0) * PROTEIN_KCAL_PER_G
+                - (fat or 0) * FAT_KCAL_PER_G)
+        carb = round(max(rest, 0) / CARB_KCAL_PER_G, 1)
+    out = {}
+    if protein:
+        out["protein_g"] = float(protein)
+    if fat:
+        out["fat_g"] = float(fat)
+    if carb is not None:
+        out["carb_g"] = float(carb)
+    return out or None
 
 
 # ---------- 計算 ----------

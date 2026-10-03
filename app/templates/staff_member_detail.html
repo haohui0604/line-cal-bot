@@ -77,6 +77,13 @@
       <div style="margin-top:4px;white-space:pre-wrap">{{ cm.body }}</div>
     </div>
     {% endfor %}
+    {% if cm_has_more %}
+    <p style="margin-top:10px">
+      <a class="btn btn-ghost btn-sm" href="?cm_offset={{ cm_offset + 30 }}">もっと見る（{{ cm_offset + 30 }} / {{ cm_total }}）</a>
+    </p>
+    {% elif cm_total %}
+    <p class="muted" style="margin-top:10px">全 {{ cm_total }} 件を表示しました</p>
+    {% endif %}
   </div>
 </div>
 

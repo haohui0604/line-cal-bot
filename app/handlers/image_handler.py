@@ -12,7 +12,10 @@ import logging
 import re
 from datetime import date
 
+import time
+
 from linebot.models import TextSendMessage
+from app.handlers.button_builder import slot_qr
 
 from app.services.ocr import extract_label
 from app.services.db import save_entry, save_weight, save_activity
@@ -136,7 +139,7 @@ def handle_image(user_id: str, message_id: str, line_bot_api):
         "quantity_g": data.get("quantity_g"),
     }]
     _pending[user_id] = {"foods": foods, "meal_slot": "snack",
-                         "date": today_jst()}
+                         "date": today_jst(), "awaiting_slot": True, "created_at": time.time()}
 
     reaction = (data.get("reaction") or "").strip()
     lines = []
@@ -149,8 +152,11 @@ def handle_image(user_id: str, message_id: str, line_bot_api):
         f" (P{f.get('protein_g','?')} F{f.get('fat_g','?')}"
         f" C{f.get('carb_g','?')} 食塩{f.get('salt_g','?')}g)"
     )
-    lines += ["", "この内容で記録しますか？ →「はい」/「いいえ」"]
-    return TextSendMessage(text="\n".join(lines))
+    lines += ["", "この内容で記録しますか？ →「はい」/「いいえ」",
+              "いつの食事か、下のボタンから選んでください。",
+              "15分間選ばれない場合や、ほかのメッセージが投稿された場合は、",
+              "今日の間食として登録されます。"]
+    return TextSendMessage(text="\n".join(lines), quick_reply=slot_qr())
 
 
 def _make_label_reply(d):

@@ -90,6 +90,11 @@ function loadLiffSdk(){return new Promise((res,rej)=>{const s=document.createEle
   <div id="app" style="display:none">
 
     <div class="card">
+      <b>🤖 AIコーチ</b>
+      <div class="muted" style="margin-top:4px">この日のデータを見たAIの見立て</div>
+      <div id="aiComment" style="margin-top:6px;white-space:pre-wrap">…</div>
+    </div>
+    <div class="card">
       <div class="muted">収支</div>
       <div class="stat"><span id="dIntake">0</span> kcal 摂取
         <span class="muted">/</span> <span id="dBurn">0</span> kcal 消費</div>
@@ -98,10 +103,27 @@ function loadLiffSdk(){return new Promise((res,rej)=>{const s=document.createEle
         <span class="muted" id="dSalt"></span></div>
     </div>
 
-    <div class="card ai">
-      <b>🤖 AIコーチ</b>
-      <div class="muted" style="margin-top:4px">この日のデータを見たAIの見立て</div>
-      <div id="aiComment" style="margin-top:6px;white-space:pre-wrap">…</div>
+    <div class="card">
+      <b>📊 摂取と消費（目標との比較）</b>
+      <div class="muted" style="margin-top:4px">■摂取　□消費　┆目標摂取カロリー</div>
+      <div id="balBars" style="position:relative;display:grid;grid-template-columns:34px 1fr 78px;gap:6px;align-items:center;margin-top:8px">
+        <span class="muted" style="font-size:12px">摂取</span>
+        <div style="height:20px;background:var(--line);border-radius:4px;overflow:hidden">
+          <div id="balIntakeBar" style="height:100%;width:0;background:#06c755"></div></div>
+        <span id="balIntakeVal" style="text-align:right;font-size:13px">0 kcal</span>
+        <span class="muted" style="font-size:12px">消費</span>
+        <div style="height:20px;background:var(--line);border-radius:4px;overflow:hidden">
+          <div id="balBurnBar" style="height:100%;width:0;background:repeating-linear-gradient(45deg,#f59e0b,#f59e0b 4px,#fff 4px,#fff 8px);border-right:1px solid #f59e0b"></div></div>
+        <span id="balBurnVal" style="text-align:right;font-size:13px">0 kcal</span>
+        <span></span>
+        <div style="position:relative;height:14px">
+          <div id="balGoalLine" style="position:absolute;left:0;top:0;bottom:0;border-left:2px dashed #ef4444"></div>
+          <span id="balGoalLabel" style="position:absolute;left:0;transform:translateX(-50%);font-size:10px;color:#ef4444;white-space:nowrap;line-height:14px"></span>
+        </div>
+        <span></span>
+      </div>
+      <div class="pfc-line" style="margin-top:6px">収支（消費−摂取）: <b id="balBalance">—</b>
+        ・ 目標との差: <b id="balDiff">—</b></div>
     </div>
 
     <div class="card">
@@ -164,7 +186,8 @@ function loadLiffSdk(){return new Promise((res,rej)=>{const s=document.createEle
 const MEMBER_ID = {{ member_id | tojson }};
 const CAN_COMMENT = {{ can_comment | tojson }};
 const CAN_EDIT = {{ can_edit | tojson }};
-const LIFF_ID = {{ liff_id | tojson }};
+let LIFF_ID = {{ liff_id | tojson }};
+{const _m = String(LIFF_ID).match(/([0-9]+-[A-Za-z0-9_-]+)/); if(_m) LIFF_ID = _m[1];}
 let idToken = null;
 let curDate = {{ initial_date | tojson }} || null;   // サーバーが前日(JST)を既定で渡す
 let pieChart = null, slotChart = null;
@@ -186,6 +209,15 @@ async function api(path, extra){
   const res = await fetch(path, {method:"POST",
     headers:{"Content-Type":"application/json"},
     body: JSON.stringify(apiBody(extra))});
+  if(res.status===401){
+    // IDトークンの期限切れ。1回だけ再ログインして取り直す
+    if(!_reloginTried){ _reloginTried = true;
+      try{ sessionStorage.removeItem("liff_login_tried_"+LIFF_ID); }catch(_){}
+      liff.login({redirectUri: location.href});
+      throw new Error("認証の有効期限が切れました。再読み込みしてください");
+    }
+    throw new Error("401 認証エラー。再読み込みしてください");
+  }
   if(!res.ok){let d="";try{d=(await res.json()).detail||"";}catch(_){}
     throw new Error(res.status+" "+d);}
   return res.json();
@@ -216,6 +248,28 @@ function render(d){
   document.getElementById("dIntake").textContent = fmt(d.intake_kcal);
   document.getElementById("dBurn").textContent = fmt(d.burn_kcal);
   document.getElementById("dGoal").textContent = d.target_kcal ? fmt(d.target_kcal)+" kcal" : "未設定";
+  // ③ 摂取・消費・目標の横バー
+  {
+    const _max = Math.max(d.intake_kcal||0, d.burn_kcal||0, d.target_kcal||0) * 1.15 || 1;
+    const _w = v => ((v||0)/_max*100).toFixed(1) + "%";
+    document.getElementById("balIntakeBar").style.width = _w(d.intake_kcal);
+    document.getElementById("balBurnBar").style.width = _w(d.burn_kcal);
+    document.getElementById("balIntakeVal").textContent = fmt(d.intake_kcal) + " kcal";
+    document.getElementById("balBurnVal").textContent = fmt(d.burn_kcal) + " kcal";
+    const _gl = document.getElementById("balGoalLine"), _gt = document.getElementById("balGoalLabel");
+    if (d.target_kcal) { _gl.style.left = _w(d.target_kcal); _gl.style.display="block";
+      _gt.style.left = _w(d.target_kcal); _gt.textContent = "目標 " + fmt(d.target_kcal); }
+    else { _gl.style.display="none"; _gt.textContent = "目標 未設定"; _gt.style.left="0"; }
+    const _bal = (d.burn_kcal||0) - (d.intake_kcal||0);
+    const _bb = document.getElementById("balBalance");
+    _bb.textContent = (_bal>=0?"+":"") + fmt(_bal) + " kcal";
+    _bb.style.color = _bal>=0 ? "#10b981" : "#ef4444";
+    const _bd = document.getElementById("balDiff");
+    if (d.target_kcal) { const _df = d.target_kcal - (d.intake_kcal||0);
+      _bd.textContent = (_df>=0?"+":"") + fmt(_df) + " kcal";
+      _bd.style.color = _df>=0 ? "#10b981" : "#ef4444"; }
+    else { _bd.textContent = "—"; }
+  }
   document.getElementById("dP").textContent = fmt(d.protein_g);
   document.getElementById("dF").textContent = fmt(d.fat_g);
   document.getElementById("dC").textContent = fmt(d.carb_g);
@@ -413,16 +467,35 @@ async function postComment(){
 }
 {% endif %}
 
+// ---- ログイン状態の取り直し（day view 版） ----
+let _reloginTried = false;
+async function ensureLogin(){
+  idToken = (liff.getIDToken && liff.getIDToken()) || null;
+  if (idToken) return true;
+  let tried = false;
+  try { tried = sessionStorage.getItem("liff_login_tried_" + LIFF_ID) === "1"; } catch(_) {}
+  if (!liff.isLoggedIn() && !tried) {
+    try { sessionStorage.setItem("liff_login_tried_" + LIFF_ID, "1"); } catch(_) {}
+    liff.login({redirectUri: location.href});
+    return false;
+  }
+  try { sessionStorage.removeItem("liff_login_tried_" + LIFF_ID); } catch(_) {}
+  showErr("ログイン情報を取得できませんでした。LINEのトークから開き直すか、"
+    + "再読み込みしてください。(isInClient=" + liff.isInClient()
+    + " / loggedIn=" + liff.isLoggedIn() + ")");
+  return false;
+}
+
 document.getElementById("prevBtn").onclick = () => shift(-1);
 document.getElementById("nextBtn").onclick = () => shift(1);
 document.getElementById("datePicker").onchange = e => load(e.target.value);
 
 (async () => {
   {% if not member_id %}
-  try{ await loadLiffSdk(); await liff.init({liffId: LIFF_ID});
-    if(!liff.isLoggedIn()){ liff.login(); return; }
-    idToken = liff.getIDToken();
-  }catch(e){ showErr("LIFF初期化に失敗: "+(e&&e.message?e.message:e)); return; }
+  try{ await loadLiffSdk(); await liff.init({liffId: LIFF_ID}); }
+  catch(e){ showErr("LIFF初期化に失敗: "+(e&&e.message?e.message:e)
+    + "（再読み込みで直ることがあります）"); return; }
+  if(!await ensureLogin()) return;
   {% endif %}
   if(!curDate) curDate = DayNav.yesterdayLocal();  // 初期表示は前日
   try{ await load(curDate); }

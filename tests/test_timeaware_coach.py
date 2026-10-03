@@ -93,11 +93,25 @@ def test_prompt_trainer_quote_is_optional():
 # ---- ルールfallbackの時間帯別 ----
 
 def test_rule_based_noon_shows_remaining():
+    """昼食まで登録済み＋夕食まだ → 夕食に使える残り枠を出す（時刻×登録状況）."""
     f = _facts()
     f["time_bucket"] = "noon"; f["remaining_kcal"] = 1500
+    f["slot_kcal"] = {"breakfast": 300, "lunch": 200}
+    f["meal_state"] = coach._meal_state(f)
     out = coach._rule_based(f)
     assert "昼" in out and "あと 1500kcal" in out and "夕食" in out
     assert "超過" not in out  # 途中経過で収支の断定はしない
+
+
+def test_rule_based_noon_without_lunch_asks():
+    """昼食が未登録なら、残り枠の提案ではなく「抜いたのか」を尋ねる."""
+    f = _facts()
+    f["time_bucket"] = "noon"; f["remaining_kcal"] = 1500
+    f["slot_kcal"] = {"breakfast": 300}
+    f["meal_state"] = coach._meal_state(f)
+    out = coach._rule_based(f)
+    assert "忙しかったのか" in out and "登録がまだ" in out
+    assert "夕食にはあと" not in out
 
 
 def test_rule_based_final_is_summary():

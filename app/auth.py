@@ -4,6 +4,7 @@
 LINEログインチャンネルを作れば userId が一致するため、
 「Webの人 = LINEのどの人か」の紐づけコードは不要。
 """
+import logging
 import secrets
 from typing import Optional
 from urllib.parse import urlencode
@@ -13,6 +14,8 @@ from itsdangerous import URLSafeSerializer, BadSignature
 from fastapi import Request
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 AUTHORIZE_URL = "https://access.line.me/oauth2/v2.1/authorize"
 TOKEN_URL = "https://api.line.me/oauth2/v2.1/token"
@@ -67,8 +70,28 @@ def verify_id_token(id_token: str) -> dict:
 
 # ---- セッションCookie（署名付き・DB不要） ----
 
+def _session_secret() -> str:
+    """セッションCookieの署名鍵.
+
+    SESSION_SECRET を設定していないと、プロセス再起動のたびに鍵が変わって
+    Cookie が全部無効になる（→ 毎回ログインに飛ばされ、その先で詰まる）。
+    そのため未設定なら LINE のチャネルシークレットから決定的に導出する。
+    """
+    secret = getattr(settings, "SESSION_SECRET", "") or ""
+    if secret:
+        return secret
+    base = getattr(settings, "LINE_LOGIN_CHANNEL_SECRET", "") or ""
+    if base:
+        logger.warning("SESSION_SECRET 未設定。LINEチャネルシークレットから"
+                       "セッション鍵を導出します（再起動でもCookieが維持されます）")
+        return "derived:" + base
+    logger.warning("SESSION_SECRET / LINE_LOGIN_CHANNEL_SECRET が共に未設定。"
+                   "セッションはプロセス再起動で無効になります")
+    return "insecure-default-session-secret"
+
+
 def _serializer() -> URLSafeSerializer:
-    return URLSafeSerializer(settings.SESSION_SECRET, salt="web-session")
+    return URLSafeSerializer(_session_secret(), salt="web-session")
 
 
 def issue_session(line_user_id: str) -> str:

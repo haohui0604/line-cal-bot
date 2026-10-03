@@ -46,6 +46,8 @@ def _verify_uid(id_token: str) -> str:
 class TokenIn(BaseModel):
     id_token: str
     days: int = 14
+    offset: int = 0   # 週送り（0=直近14日, 1=その前の14日 ...）
+    cm_offset: int = 0   # コメントのページング開始位置
 
 
 @router.get("/me", response_class=HTMLResponse)
@@ -62,18 +64,24 @@ def me_summary(body: TokenIn):
     """自分のカロリー推移・体重推移（グラフ用JSON）."""
     uid = _verify_uid(body.id_token)
     days = max(1, min(body.days, 90))
+    offset = max(0, min(body.offset, 52))
     labels, intake, burn, pfc = [], [], [], []
     today = today_jst_date()
-    for i in range(days - 1, -1, -1):
-        d = (today - timedelta(days=i)).isoformat()
+    end = today - timedelta(days=offset * days)
+    start = end - timedelta(days=days - 1)
+    for i in range(days):
+        d = (start + timedelta(days=i)).isoformat()
         s = fetch_day_summary(uid, d)
         labels.append(d[5:])
         intake.append(s.get("intake_kcal") or 0)
         burn.append(s.get("burn_kcal") or s.get("burn") or 0)
         pfc.append((s.get("protein_g"), s.get("fat_g"), s.get("carb_g")))
-    wseries = fetch_weight_series(uid, days=days) or []
+    w_all = fetch_weight_series(uid, days=days * (offset + 1)) or []
+    _s, _e = start.isoformat(), end.isoformat()
+    wseries = [w for w in w_all if _s <= str(w.get("date") or "")[:10] <= _e]
     return {
         "labels": labels, "intake": intake, "burn": burn,
+        "window_start": _s, "window_end": _e, "offset": offset,
         "weight_labels": [(w.get("date") or "")[5:] for w in wseries],
         "weight": [w.get("weight_kg") for w in wseries],
         "today": fetch_day_summary(uid, today.isoformat()),
@@ -90,9 +98,14 @@ def me_history(body: TokenIn):
 
 @router.post("/api/me/comments")
 def me_comments(body: TokenIn):
-    """自分宛のコメント（トレーナー / AIコーチ）."""
+    """自分宛のコメント（トレーナー / AIコーチ）を30件ずつ返す."""
     uid = _verify_uid(body.id_token)
-    return {"comments": gym_db.fetch_comments_for_user(uid, limit=30)}
+    lim = 30
+    off = max(0, min(body.cm_offset, 5000))
+    items = gym_db.fetch_comments_for_user(uid, limit=lim, offset=off)
+    total = gym_db.count_comments_for_user(uid)
+    return {"comments": items, "offset": off, "limit": lim, "total": total,
+            "has_more": off + len(items) < total}
 
 
 @router.post("/api/me/role")

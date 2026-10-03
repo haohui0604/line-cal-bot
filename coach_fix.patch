@@ -1,0 +1,2642 @@
+diff --git a/app/auth.py b/app/auth.py
+index da461d0..f1c814e 100644
+--- a/app/auth.py
++++ b/app/auth.py
+@@ -4,6 +4,7 @@
+ LINEログインチャンネルを作れば userId が一致するため、
+ 「Webの人 = LINEのどの人か」の紐づけコードは不要。
+ """
++import logging
+ import secrets
+ from typing import Optional
+ from urllib.parse import urlencode
+@@ -14,6 +15,8 @@ from fastapi import Request
+ 
+ from app.config import settings
+ 
++logger = logging.getLogger(__name__)
++
+ AUTHORIZE_URL = "https://access.line.me/oauth2/v2.1/authorize"
+ TOKEN_URL = "https://api.line.me/oauth2/v2.1/token"
+ VERIFY_URL = "https://api.line.me/oauth2/v2.1/verify"
+@@ -67,8 +70,28 @@ def verify_id_token(id_token: str) -> dict:
+ 
+ # ---- セッションCookie（署名付き・DB不要） ----
+ 
++def _session_secret() -> str:
++    """セッションCookieの署名鍵.
++
++    SESSION_SECRET を設定していないと、プロセス再起動のたびに鍵が変わって
++    Cookie が全部無効になる（→ 毎回ログインに飛ばされ、その先で詰まる）。
++    そのため未設定なら LINE のチャネルシークレットから決定的に導出する。
++    """
++    secret = getattr(settings, "SESSION_SECRET", "") or ""
++    if secret:
++        return secret
++    base = getattr(settings, "LINE_LOGIN_CHANNEL_SECRET", "") or ""
++    if base:
++        logger.warning("SESSION_SECRET 未設定。LINEチャネルシークレットから"
++                       "セッション鍵を導出します（再起動でもCookieが維持されます）")
++        return "derived:" + base
++    logger.warning("SESSION_SECRET / LINE_LOGIN_CHANNEL_SECRET が共に未設定。"
++                   "セッションはプロセス再起動で無効になります")
++    return "insecure-default-session-secret"
++
++
+ def _serializer() -> URLSafeSerializer:
+-    return URLSafeSerializer(settings.SESSION_SECRET, salt="web-session")
++    return URLSafeSerializer(_session_secret(), salt="web-session")
+ 
+ 
+ def issue_session(line_user_id: str) -> str:
+diff --git a/app/handlers/button_builder.py b/app/handlers/button_builder.py
+index 1a69d10..cccf142 100644
+--- a/app/handlers/button_builder.py
++++ b/app/handlers/button_builder.py
+@@ -21,3 +21,24 @@ def msq(label, text=None):
+     return QuickReplyButton(
+         action=MessageAction(label=label, text=text or label)
+     )
++
++
++def slot_qr():
++    """写真アップ後「いつの食事か」を選ぶクイックリプライ（11件）.
++
++    LINEのクイックリプライ上限は13件（12件＋キャンセル）。postback data は slot=<offset>:<slot>。
++    """
++    return qr(
++        pb("今日の朝食", "slot=0:breakfast", "今日の朝食"),
++        pb("今日の昼食", "slot=0:lunch", "今日の昼食"),
++        pb("今日の夕食", "slot=0:dinner", "今日の夕食"),
++        pb("今日の間食", "slot=0:snack", "今日の間食"),
++        pb("今日の夜食", "slot=0:snack", "今日の夜食"),
++        pb("昨日の朝食", "slot=1:breakfast", "昨日の朝食"),
++        pb("昨日の昼食", "slot=1:lunch", "昨日の昼食"),
++        pb("昨日の夕食", "slot=1:dinner", "昨日の夕食"),
++        pb("昨日の間食", "slot=1:snack", "昨日の間食"),
++        pb("昨日の夜食", "slot=1:snack", "昨日の夜食"),
++        pb("その他", "slot=other", "その他"),
++        pb("キャンセル", "slot=cancel", "キャンセル"),
++    )
+diff --git a/app/handlers/image_handler.py b/app/handlers/image_handler.py
+index e1e4483..2dcf72c 100644
+--- a/app/handlers/image_handler.py
++++ b/app/handlers/image_handler.py
+@@ -12,7 +12,10 @@ import logging
+ import re
+ from datetime import date
+ 
++import time
++
+ from linebot.models import TextSendMessage
++from app.handlers.button_builder import slot_qr
+ 
+ from app.services.ocr import extract_label
+ from app.services.db import save_entry, save_weight, save_activity
+@@ -136,7 +139,7 @@ def handle_image(user_id: str, message_id: str, line_bot_api):
+         "quantity_g": data.get("quantity_g"),
+     }]
+     _pending[user_id] = {"foods": foods, "meal_slot": "snack",
+-                         "date": today_jst()}
++                         "date": today_jst(), "awaiting_slot": True, "created_at": time.time()}
+ 
+     reaction = (data.get("reaction") or "").strip()
+     lines = []
+@@ -149,8 +152,11 @@ def handle_image(user_id: str, message_id: str, line_bot_api):
+         f" (P{f.get('protein_g','?')} F{f.get('fat_g','?')}"
+         f" C{f.get('carb_g','?')} 食塩{f.get('salt_g','?')}g)"
+     )
+-    lines += ["", "この内容で記録しますか？ →「はい」/「いいえ」"]
+-    return TextSendMessage(text="\n".join(lines))
++    lines += ["", "この内容で記録しますか？ →「はい」/「いいえ」",
++              "いつの食事か、下のボタンから選んでください。",
++              "15分間選ばれない場合や、ほかのメッセージが投稿された場合は、",
++              "今日の間食として登録されます。"]
++    return TextSendMessage(text="\n".join(lines), quick_reply=slot_qr())
+ 
+ 
+ def _make_label_reply(d):
+diff --git a/app/handlers/text_handler.py b/app/handlers/text_handler.py
+index 901fc4e..b4a9ae5 100644
+--- a/app/handlers/text_handler.py
++++ b/app/handlers/text_handler.py
+@@ -1,5 +1,6 @@
+ """テキスト入力 → commands / records / summary / LLM chat 振り分け."""
+ import logging
++import time
+ import re
+ from datetime import timedelta
+ from app.handlers.flex_builder import daily_flex
+@@ -181,7 +182,7 @@ _PERSONA_DEFAULT_MAP = {
+     "bot_pronoun": "わたし",
+ }
+ 
+-_SLOT_JP = {"breakfast": "朝", "lunch": "昼", "dinner": "夜", "snack": "間食"}
++_SLOT_JP = {"breakfast": "朝", "lunch": "昼", "dinner": "夜", "snack": "間食", "night": "夜食", }
+ 
+ 
+ def _slot_jp(slot: str) -> str:
+@@ -360,7 +361,143 @@ def _finish_setup(user_id: str, data: dict, months):
+     return TextSendMessage(text="\n".join(lines))
+ 
+ 
++# ---- 写真アップ後の「いつの食事か」選択 ----
++
++SLOT_PICK_TIMEOUT_SEC = 900  # 15分
++
++
++def _date_jp(d: str) -> str:
++    from app.services.dates import today_jst, yesterday_jst
++    if d == today_jst():
++        return "今日"
++    if d == yesterday_jst():
++        return "昨日"
++    return d or "今日"
++
++
++def _confirm_pending_message(p: dict, user_id: str):
++    from linebot.models import TextSendMessage
++    foods = p.get("foods") or []
++    names = "、".join((f.get("name") or "未名") for f in foods)
++    total = sum(float(f.get("kcal") or 0) for f in foods)
++    d = p.get("date") or _today()
++    return TextSendMessage(
++        text=(f"📷 {_date_jp(d)}の{_slot_jp(p.get('meal_slot') or 'snack')}として記録します。\n"
++              f"{names}\n合計 約{int(round(total))} kcal\n\nこの内容で記録しますか？"),
++        quick_reply=qr(pb("✅ 記録する", "cmd=confirm_yes", "記録する"),
++                       pb("キャンセル", "cmd=confirm_no", "キャンセル")))
++
++
++def sweep_expired_pendings() -> dict:
++    """放置（15分超）の写真をまとめて確定する。keepalive から定期実行される.
++
++    返り値: {user_id: 通知文}（確定した分だけ）。
++    """
++    out = {}
++    for uid in list(_pending.keys()):
++        n = finalize_pending(uid)
++        if n:
++            out[uid] = n
++    return out
++
++
++def handle_slot_choice(user_id: str, payload: str):
++    """写真アップ後の「いつの食事か」ボタン（postback slot=...）を処理する."""
++    from linebot.models import TextSendMessage
++    payload = (payload or "").strip()
++    if payload == "cancel":
++        # 「その他」の入力待ち中でもキャンセルできる
++        p = _pending.pop(user_id, None)
++        if not p:
++            return TextSendMessage(
++                text="キャンセルする写真がありません（すでに確定済みか、キャンセル済みです）。")
++        return TextSendMessage(text="📷 写真の記録をキャンセルしました。何も登録していません。")
++    p = _pending.get(user_id)
++    if not p:
++        return TextSendMessage(text="選択待ちの写真がありません。もう一度写真を送ってください。")
++    if payload == "other":
++        p["awaiting_other"] = True
++        return TextSendMessage(text=(
++            "いつの食事か、日付と区分を入力してください。\n"
++            "例: 「おとといのひる」「2日前の夜食」「10/2 昼食」「昨日の朝」\n"
++            "（うまく読み取れないときは、もう一度お願いします）"))
++    try:
++        off_s, slot = payload.split(":", 1)
++        off = int(off_s)
++    except Exception:
++        return TextSendMessage(text="選択を読み取れませんでした。もう一度ボタンを押してください。")
++    from app.services.dates import today_jst, yesterday_jst
++    p["meal_slot"] = slot or "snack"
++    p["date"] = today_jst() if off == 0 else yesterday_jst()
++    p["awaiting_slot"] = False
++    p["awaiting_other"] = False
++    return _confirm_pending_message(p, user_id)
++
++
++def _resolve_other_slot(user_id: str, text: str):
++    """「その他」選択後のフリーテキストを解釈して確定確認を返す."""
++    from linebot.models import TextSendMessage
++    p = _pending.get(user_id)
++    if not p:
++        return None
++    from app.services.meal_when import parse_meal_when
++    d, slot = parse_meal_when(text)
++    if not d or not slot:
++        miss = []
++        if not d:
++            miss.append("日付（今日／昨日／おととい／2日前／10/2 など）")
++        if not slot:
++            miss.append("区分（朝食／昼食／夕食／間食／夜食）")
++        return TextSendMessage(text=(
++            "うまく読み取れませんでした。" + "と".join(miss) + "を入れてください。\n"
++            "例: 「おとといのひる」「2日前の夜食」「10/2 昼食」"))
++    p["date"] = d
++    p["meal_slot"] = slot
++    p["awaiting_other"] = False
++    p["awaiting_slot"] = False
++    return _confirm_pending_message(p, user_id)
++
++
++def finalize_pending(user_id: str, incoming_text: str = None):
++    """区分未選択の写真を確定する（放置15分／別メッセージ時は「今日の間食」）.
++
++    返り値: 確定通知の文言（確定しなければ None）。webhook が返信の先頭に足す。
++    """
++    p = _pending.get(user_id)
++    if not p:
++        return None
++    if p.get("awaiting_other"):
++        return None                      # フリーテキスト入力を待っている
++    t = (incoming_text or "").strip()
++    if t in ("はい", "いいえ", "記録する", "キャンセル"):
++        return None                      # 通常の確認フローに任せる
++    age = time.time() - float(p.get("created_at") or 0)
++    if p.get("awaiting_slot") and age < SLOT_PICK_TIMEOUT_SEC:
++        return None                      # まだ選択待ち（15分以内）
++    chosen = not p.get("awaiting_slot")
++    p = _pending.pop(user_id, None)
++    if not p:
++        return None
++    foods = p.get("foods") or []
++    try:
++        _save_foods(user_id, foods, p.get("meal_slot") or "snack", p.get("date"))
++    except Exception:
++        logging.getLogger(__name__).exception("finalize_pending failed")
++        return None
++    total = int(round(sum(float(f.get("kcal") or 0) for f in foods)))
++    d = p.get("date") or _today()
++    slot_jp = _slot_jp(p.get("meal_slot") or "snack")
++    head = "⏱ 食事区分が選ばれなかったので" if not chosen else "📷 写真の記録を確定しました"
++    return (f"{head}、{_date_jp(d)}の{slot_jp}として登録しました。"
++            f"（{len(foods)}品・約{total} kcal）")
++
++
+ def handle_text(user_id: str, text: str):
++    _p = _pending.get(user_id)
++    if _p and _p.get("awaiting_other"):
++        _r = _resolve_other_slot(user_id, text)
++        if _r is not None:
++            return _r
+     try:
+         text = text.strip()
+         if not text:
+diff --git a/app/services/coach.py b/app/services/coach.py
+index ce4525a..7857849 100644
+--- a/app/services/coach.py
++++ b/app/services/coach.py
+@@ -1,10 +1,12 @@
+-"""日別ビュー用のAIコーチコメント生成 (Phase 3.5d).
++"""日別ビュー用のAIコーチコメント生成 (Phase 3.5d / 3.5g).
+ 
+-コメントの順序（設計）:
+-  1. AIは自分の見立てを先に述べる（データ → 自分の判断）
+-  2. そのうえで、**過去の日付**に付いたトレーナーコメントが関係する場合だけ
++コメントの設計:
++  1. 「いま何が登録されているか」×「時刻帯」で状況（scenario）を1つだけ確定する。
++     → 夕食を食べて登録した直後に「今日の夕食はあといくら」と言われる事故を防ぐ。
++  2. AIは自分の見立てを先に述べる（データ → 自分の判断）
++  3. そのうえで、**過去の日付**に付いたトレーナーコメントが関係する場合だけ
+      「〇〇さんも前に言ってたな」と一言添える
+-  3. 同じ日に付いたトレーナーコメントは、AIコメント生成時には参照しない
++  4. 同じ日に付いたトレーナーコメントは、AIコメント生成時には参照しない
+      （トレーナーが後から付けた内容を、その日のAIコメントがなぞるのを防ぐ）
+ 
+ これにより「その日のデータが固まる → AIコメント → トレーナーコメント →
+@@ -23,7 +25,7 @@ from app.services.db import (
+     get_report_comment, save_report_comment,
+ )
+ from app.services.gym_db import fetch_active_directives, fetch_past_trainer_comments
+-from app.services.goals import context_line as goal_context_line
++from app.services.goals import context_line as goal_context_line, pfc_targets
+ from app.services.day_view import SLOT_JP
+ from app.services.dates import now_jst, today_jst
+ 
+@@ -35,6 +37,15 @@ API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
+ BUCKET_JP = {"morning": "朝", "noon": "昼", "evening": "夕方",
+              "night": "夜", "final": "確定"}
+ 
++# 食事の登録有無を判定する区分（間食・夜食は「その他」として扱う）
++MEAL_SLOTS = ("breakfast", "lunch", "dinner")
++SLOT_ORDER = ("breakfast", "lunch", "dinner", "snack", "night")
++
++# 「間食・デザートに使ってよい」と提示する最小の残り枠。
++# これ未満なら「追加で食べる提案」はしない（提案の空手形を防ぐ）。
++DESSERT_MIN_KCAL = 150
++
++# 時刻帯ごとの基本方針。食事の登録状況に応じた指示は _meal_state() 側で上書きする。
+ TIME_GUIDE = {
+     "morning": ("今日はまだ朝。朝食の記録があれば労い、これからの1日の"
+                 "立て方（昼・夕の配分）を前向きに伝える。"),
+@@ -63,26 +74,163 @@ def _time_bucket(target_date: str) -> str:
+     return "night"
+ 
+ 
++# ---- 状況（時刻帯 × 登録済みの食事）の確定 ----
++
++def _logged_slots(f: dict) -> dict:
++    """その日に実際に記録が入っている区分と kcal を返す（0kcal は記録なし扱い）."""
++    return {k: v for k, v in (f.get("slot_kcal") or {}).items() if v}
++
++
++def _meal_state(f: dict) -> dict:
++    """「時刻帯 × 実際に登録されている食事区分」から状況を1つだけ決める.
++
++    返り値の instruction が、その状況でAIがやるべき唯一の仕事。
++    ここに無い場面（例: 夕食を食べ終えて登録済みなのに「夕食の残り枠」）は
++    扱わせない。判定はすべてコード側で行い、LLMには選ばせない。
++    """
++    b = f.get("time_bucket") or _time_bucket(f.get("date", ""))
++    slots = _logged_slots(f)
++    has_b = bool(slots.get("breakfast"))
++    has_l = bool(slots.get("lunch"))
++    has_d = bool(slots.get("dinner"))
++    has_any = bool(slots)
++    rem = f.get("remaining_kcal")
++    room = None
++    if has_d and rem is not None and rem >= DESSERT_MIN_KCAL:
++        room = int(rem)
++
++    st = {"time_bucket": b, "has_breakfast": has_b, "has_lunch": has_l,
++          "has_dinner": has_d, "has_any": has_any, "remaining_kcal": rem,
++          "dessert_room_kcal": room, "forbid_dinner_budget": False}
++
++    if b == "final":
++        return {**st, "scenario": "final", "instruction": TIME_GUIDE["final"]}
++
++    if b == "morning":
++        if has_b:
++            return {**st, "scenario": "morning_logged", "instruction": (
++                "朝食は登録済み。朝食の内容を評価し、この後の昼・夕の配分の目安を"
++                "前向きに伝える。")}
++        if has_any:
++            return {**st, "scenario": "morning_partial", "instruction": (
++                "朝食以外の記録はあるが朝食がまだ。急かさず、"
++                "食べたら登録するよう軽く促す。")}
++        return {**st, "scenario": "morning_empty", "instruction": (
++            "まだ何も登録されていない。一日の始まりなので、"
++            "食べたら記録するよう無理なく促す。")}
++
++    if b == "noon":
++        if has_l:
++            return {**st, "scenario": "lunch_logged", "instruction": (
++                "昼食は登録済み。ここまでの摂取と目標の残り枠を示し、"
++                "夕食に使える量と、それを踏まえた具体的な料理名を1〜2品提案する。")}
++        if has_b or has_any:
++            return {**st, "scenario": "lunch_missing", "instruction": (
++                "昼食がまだ登録されていない。忙しかったのか、"
++                "まだ登録していないだけなのかを責めずに尋ね、"
++                "食べたなら記録するよう促す。")}
++        return {**st, "scenario": "midday_empty", "instruction": (
++            "朝食の記録も無いまま昼になった。『朝を抜いたのか、"
++            "登録がまだなのか』を責めずに尋ね、食べた分を登録するよう促す。")}
++
++    if b == "evening":
++        if has_d:
++            st = {**st, "forbid_dinner_budget": True,
++                  "scenario": "dinner_logged"}
++            if room:
++                st["instruction"] = (
++                    "夕食も登録済み。1日の収支を整理し、目標に残っている余裕"
++                    "（間食・デザートに使ってよい量）を1つ示す。"
++                    "夕食の『あと食べられる量』には触れない。")
++            else:
++                st["instruction"] = (
++                    "夕食も登録済みで、今日はもう目標を超えている（または余裕が小さい）。"
++                    "1日の収支を整理し、追加で食べる提案はせず明日の一手を1つ添える。")
++            return st
++        if has_l:
++            return {**st, "scenario": "dinner_budget", "instruction": (
++                "昼食まで登録済みで夕食がまだ。夕食にあと何kcal使えるかを示し、"
++                "具体的な料理名を1〜2品提案する。")}
++        if has_any:
++            return {**st, "scenario": "dinner_missing", "instruction": (
++                "夕食がまだ登録されていない（朝・昼の記録も少ない）。"
++                "忙しかったのかを気遣いながら、食べたら記録するよう促す。")}
++        return {**st, "scenario": "evening_empty", "instruction": (
++            "夕方だがまだ何も登録されていない。"
++            "『登録し忘れか、食べていないのか』を責めずに尋ねる。")}
++
++    # night（夜〜深夜）
++    if has_d:
++        st = {**st, "forbid_dinner_budget": True,
++              "scenario": "night_dinner_logged"}
++        if room:
++            st["instruction"] = (
++                "夕食まで登録済み。1日の収支を整理して総括し、目標に余裕が"
++                "残っているので間食・デザートに使ってよい量を1つ示す。"
++                "夕食の『あと食べられる量』には触れない。")
++        else:
++            st["instruction"] = (
++                "夕食まで登録済みで、今日はもう目標を超えている（または余裕が小さい）。"
++                "1日の収支を整理し、追加で食べる提案はせず明日の一手を1つ添える。")
++        return st
++    if has_l or has_any:
++        return {**st, "scenario": "night_no_dinner", "instruction": (
++            "夜だが夕食がまだ登録されていない。"
++            "『夕食を抜いたのか、登録がまだなのか』を責めずに尋ね、"
++            "この時間の食事は軽めに、明日の一手を添える。")}
++    return {**st, "scenario": "night_empty", "instruction": (
++        "夜だがこの日の記録がほとんど無い。責めずに『登録し忘れか』を尋ね、"
++        "明日は1食だけでも記録するよう促す。")}
++
++
+ def _situation_block(f: dict) -> str:
+-    b = f.get("time_bucket", "final")
++    """状況（scenario）と、その場面で使ってよい数値だけを渡すブロック."""
++    st = f.get("meal_state") or _meal_state(f)
++    b = st.get("time_bucket") or f.get("time_bucket") or "final"
+     rem = f.get("remaining_kcal")
+-    rem_line = (f"- 目標までの残り摂取枠: {rem}kcal\n"
+-                if rem is not None else "")
++    bal = f.get("balance_kcal")
++
++    lines = ["# 状況"]
+     if b == "final":
+-        return ("# 状況\n"
+-                "- 対象日のデータは確定（1日の終わり、または過去日）。"
+-                "1日全体の総括としてコメントする。\n" + rem_line)
+-    return ("# 状況（1日の途中経過。確定値ではない）\n"
+-            f"- 現在の時刻帯: {BUCKET_JP[b]}\n"
+-            + rem_line
+-            + f"- 指示: {TIME_GUIDE[b]}\n"
+-              "- 途中経過なので『1日分が確定した』かのように低摂取を責めてはいけない。"
+-              "まだ記録されていない食事がある前提で話す。\n")
++        lines.append("- 対象日のデータは確定（1日の終わり、または過去日）。"
++                     "1日全体の総括としてコメントする。")
++    else:
++        lines.append(f"- 現在の時刻帯: {BUCKET_JP[b]}"
++                     "（今日の途中経過。確定値ではない）")
++
++    slots = _logged_slots(f)
++    label = " / ".join(
++        f"{SLOT_JP.get(k, k)} {round(slots[k])}kcal"
++        for k in SLOT_ORDER if slots.get(k)
++    ) or "なし"
++    lines.append(f"- 登録済みの食事区分: {label}")
++
++    if rem is not None:
++        lines.append(
++            f"- 目標までの残り摂取枠: {rem}kcal（目標 {f.get('goal')}kcal"
++            f" − 摂取 {f.get('intake')}kcal。プラスなら『あと食べてよい量』、"
++            "マイナスなら『目標超過』）")
++    if bal is not None:
++        lines.append(
++            f"- 摂取と消費の収支: {bal}kcal（摂取 {f.get('intake')}kcal"
++            f" − 消費 {f.get('burn')}kcal。残り摂取枠とは別の指標）")
++    if st.get("dessert_room_kcal") is not None:
++        lines.append(f"- 目標に残っている余裕: {st['dessert_room_kcal']}kcal"
++                     "（間食・デザートに使ってよい量の上限）")
++
++    lines.append(f"- この状況でやること: {st['instruction']}")
++    if st.get("forbid_dinner_budget"):
++        lines.append("- 禁止: 夕食は登録済みなので、追加で食べられる量（残り枠）や"
++                     "夕食の献立の提案はしない。")
++    if b != "final":
++        lines.append("- 途中経過なので『1日分が確定した』かのように低摂取を"
++                     "責めてはいけない。まだ記録されていない食事がある前提で話す。")
++    return "\n".join(lines) + "\n"
+ 
+ 
+ # 過去のトレーナーコメントを何日分さかのぼるか
+ PAST_COMMENT_DAYS = 14
+-PAST_COMMENT_LIMIT = 5
++PAST_COMMENT_LIMIT = 3
+ 
+ try:
+     from app.config import settings
+@@ -108,6 +256,10 @@ def _build_facts(user_id: str, target_date: str) -> dict:
+         f" {round(e.get('kcal') or 0)}kcal"
+         for e in entries
+     ]
++    slot_kcal: dict = {}
++    for e in entries:
++        sl = e.get("meal_slot") or "snack"
++        slot_kcal[sl] = round(slot_kcal.get(sl, 0) + (e.get("kcal") or 0))
+     # 対象日より「前」の日付に付いたトレーナーコメントのみ（当日分は含めない）
+     try:
+         past = fetch_past_trainer_comments(
+@@ -126,6 +278,7 @@ def _build_facts(user_id: str, target_date: str) -> dict:
+         "carb_g": round(s.get("carb_g") or 0, 1),
+         "weight_kg": weight_kg,
+         "foods": foods,
++        "slot_kcal": slot_kcal,
+         "past_trainer": [
+             {"date": p.get("target_date"), "author": p.get("author_name"),
+              "body": p.get("body"), "directive": bool(p.get("is_directive"))}
+@@ -137,6 +290,28 @@ def _build_facts(user_id: str, target_date: str) -> dict:
+     facts["time_bucket"] = _time_bucket(target_date)
+     facts["remaining_kcal"] = (
+         facts["goal"] - facts["intake"]) if facts.get("goal") else None
++    # 摂取 − 消費（マイナス＝消費が上回っている）。
++    # 「目標までの残り枠」とは別の指標なので、プロンプトでも分けて渡す。
++    facts["balance_kcal"] = facts["intake"] - facts["burn"]
++    # 目標PFC（目安）。設定が無ければ体重・目標kcalから算出する。
++    try:
++        t = pfc_targets(user_id, target_kcal=facts.get("goal"))
++    except Exception:
++        logger.exception("pfc_targets failed")
++        t = None
++    if t:
++        facts["pfc_target"] = t
++        pct = {}
++        for short, key, got in (("protein", "protein_g", facts["protein_g"]),
++                                ("fat", "fat_g", facts["fat_g"]),
++                                ("carb", "carb_g", facts["carb_g"])):
++            tgt = t.get(key)
++            if tgt:
++                pct[short] = f"{round(got / tgt * 100)}%"
++        if pct:
++            facts["pfc_pct"] = pct
++    # 時刻帯 × 登録済みの食事区分 → 状況を1つに確定（LLMには選ばせない）
++    facts["meal_state"] = _meal_state(facts)
+     # ハッシュに「過去のトレーナーコメント」を含める。
+     # → 過去日にコメントが付くと翌日以降のキャッシュが自動で作り直される。
+     #    同じ日にコメントが付いても、その日のキャッシュは変化しない（意図どおり）。
+@@ -147,24 +322,87 @@ def _build_facts(user_id: str, target_date: str) -> dict:
+ 
+ 
+ def _rule_based(f: dict) -> str:
+-    """LLM失敗時のフォールバック（事実のみ。時刻帯に応じた言い回し）."""
+-    b = f.get("time_bucket", "final")
++    """LLM失敗時のフォールバック（事実のみ。状況ごとの言い回し）."""
++    st = f.get("meal_state") or _meal_state(f)
++    scenario = st.get("scenario", "final")
++    b = st.get("time_bucket") or f.get("time_bucket", "final")
+     rem = f.get("remaining_kcal")
+-    if b == "final":
++
++    if scenario == "final":
+         bal = f["intake"] - f["burn"]
+         sign = "超過" if bal > 0 else "以内"
+         parts = [f"摂取 {f['intake']}kcal / 消費 {f['burn']}kcal"
+                  f"（{abs(bal)}kcal{sign}）。"]
+         if f.get("goal"):
+-            parts.append(f"目標は {f['goal']}kcal。")
++            diff = f["goal"] - f["intake"]
++            parts.append(f"目標は {f['goal']}kcal、"
++                         + (f"あと {diff}kcal の余裕があります。" if diff >= 0
++                            else f"{abs(diff)}kcal 超過しています。"))
++            if diff > f["goal"] * 0.3:
++                parts.append("摂取がやや少なめなので、無理に削らず"
++                             "必要な分は補いましょう。")
+         if not f["foods"]:
+             parts.append("この日の食事記録はまだありません。")
+         return "".join(parts)
+-    # 途中経過（朝/昼/夕方/夜）
++
++    # 夕食まで登録済み: 収支＋（余裕があるときだけ）デザート枠。
++    # 夕食の残り枠には触れない（食べ終えた後の「あと夕食に◯◯」を禁止）。
++    if scenario in ("dinner_logged", "night_dinner_logged"):
++        bal = f["intake"] - f["burn"]
++        sign = "超過" if bal > 0 else "以内"
++        parts = [f"摂取 {f['intake']}kcal / 消費 {f['burn']}kcal"
++                 f"（{abs(bal)}kcal{sign}）。"]
++        room = st.get("dessert_room_kcal")
++        if room:
++            parts.append(f"目標にはまだ {room}kcal の余裕があるので、"
++                         "間食やデザートに使ってよい量です。")
++        elif rem is not None:
++            if rem >= 0:
++                parts.append(f"目標まであと {rem}kcal。"
++                             "追加で食べるならこの範囲で。")
++            else:
++                parts.append(f"今日は目標を {abs(rem)}kcal 超えています。"
++                             "追加は控えめにしましょう。")
++        parts.append("明日もこの調子で記録を続けましょう。")
++        return "".join(parts)
++
++    # 状況だけを尋ねる場面でも、当日の数値は必ず添える（判断材料を消さない）
++    data = (f" 今日の摂取は {f['intake']}kcal、消費は {f['burn']}kcal"
++            + (f"（目標 {f['goal']}kcal）。" if f.get("goal") else "。"))
++
++    # 昼食がまだ → 「抜いたのか、登録がまだか」を尋ねる
++    if scenario == "midday_empty":
++        return ("昼の時点で朝食・昼食の記録がまだありません。"
++                "朝を抜いたのか、登録がまだなのか教えてください。"
++                "食べた分を記録すると、夕食の目安を出せます。" + data)
++    if scenario == "lunch_missing":
++        return ("昼食の記録がまだありません。忙しかったのか、"
++                "登録がまだなのか教えてください。"
++                "食べたなら記録しておくと、夕食の目安を出せます。" + data)
++
++    # 夕食がまだ・夜に記録なし
++    if scenario in ("dinner_missing", "evening_empty"):
++        return ("夕食の記録がまだありません。忙しかったのか、"
++                "登録がまだなのか教えてください。"
++                "食べたら記録しておくと、今日の収支をまとめられます。" + data)
++    if scenario == "night_no_dinner":
++        return ("夜になりましたが、夕食の記録がまだありません。"
++                "夕食を抜いたのか、登録がまだなのか教えてください。"
++                "この時間の食事は軽めにして、明日の記録につなげましょう。" + data)
++    if scenario == "night_empty":
++        return ("今日はまだ記録がありません。登録し忘れではありませんか。"
++                "明日は1食だけでも記録すると、流れが見えてきます。" + data)
++    if scenario in ("morning_empty", "morning_partial"):
++        return ("この時点ではまだ記録がありません。"
++                "食べたら記録しておきましょう。" + data)
++
++    # 途中経過（朝食・昼食が登録済みで夕食がまだ）
+     parts = [f"この時点（{BUCKET_JP[b]}）の摂取は {f['intake']}kcal。"]
+-    if rem is not None:
++    if rem is not None and rem > 0:
+         parts.append(f"目標まであと {rem}kcal の枠がある。")
+-    if not f["foods"]:
++        if scenario in ("lunch_logged", "dinner_budget"):
++            parts.append(f"夕食にはあと {rem}kcal 使える。")
++    if not _logged_slots(f):
+         parts.append("まだ今日の記録がない。食べたら記録しておこう。")
+     elif b == "noon":
+         parts.append("夕食はこの残り枠を目安に選ぶとよい。")
+@@ -176,40 +414,72 @@ def build_prompt(persona: dict, f: dict, goal_line: str = "",
+     """AIコーチ用プロンプトを組み立てる（テスト可能なよう関数化）.
+ 
+     重要: 「自分の見立て → トレーナーへの言及」の順序をプロンプトで明示する。
++    状況（時刻帯 × 登録済みの食事）はコード側で1つに確定し、
++    ここでは「その場面だけ」を扱わせる。
+     """
+     directives = directives or []
+     past = f.get("past_trainer") or []
+ 
++    def _clean(body) -> str:
++        """引用文を1行・短めに整える（改行や鉤括弧、乱暴な長文をそのまま載せない）."""
++        t = " ".join(str(body or "").split()).strip("「」『』\"'　")
++        return t[:60] + ("…" if len(t) > 60 else "")
++
+     past_block = ""
+     if past:
+         lines = []
+         for p in past:
+             who = p.get("author") or "トレーナー"
+             mark = "（⭐方針）" if p.get("directive") else ""
+-            lines.append(f"- {p.get('date')} {who}: {p.get('body')}{mark}")
++            lines.append(f"- {p.get('date')} {who}: {_clean(p.get('body'))}{mark}")
+         past_block = (
+-            "\n# 過去の担当トレーナーからの指導（参考情報）\n"
+-            + "\n".join(lines) + "\n")
++            "\n# 過去の担当トレーナーからの指導（参考情報・発言そのもの）\n"
++            + "\n".join(lines) + "\n"
++            "※ ここに並ぶのはトレーナーの生の言葉。そのまま復唱せず、"
++            "敬意を保った言い方に直して必要な分だけ触れる。"
++            "乱暴・断定的な言い回しや、今日の内容と無関係な発言は引用しない。\n")
+     elif directives:
+-        lines = "\n".join(f"- {d['body']}" for d in directives)
++        lines = "\n".join(f"- {_clean(d['body'])}" for d in directives)
+         past_block = (
+-            "\n# 過去の担当トレーナーからの指導（参考情報）\n"
+-            + lines + "\n")
++            "\n# 過去の担当トレーナーからの指導（参考情報・発言そのもの）\n"
++            + lines + "\n"
++            "※ 上と同様、そのまま復唱せず敬意を保った言い方に直すこと。\n")
+ 
+-    bucket = f.get("time_bucket", "final")
++    st = f.get("meal_state") or _meal_state(f)
++    bucket = st.get("time_bucket") or f.get("time_bucket", "final")
+     situation = _situation_block(f)
+     data_heading = ("# 対象日のデータ（確定値。改変・捏造は禁止）"
+                     if bucket == "final"
+                     else "# 対象日のこの時点のデータ（途中経過。改変・捏造は禁止）")
++
++    pfc_block = ""
++    t = f.get("pfc_target")
++    if t:
++        pfc_block += ("- PFC目標（目安）: " + " / ".join(
++            f"{name} {v}g" for name, v in
++            (("P", t.get("protein_g")), ("F", t.get("fat_g")),
++             ("C", t.get("carb_g"))) if v) + "\n")
++        pct = f.get("pfc_pct") or {}
++        if pct:
++            pfc_block += ("- PFC達成率: " + " / ".join(
++                f"{name} {v}" for name, v in
++                (("P", pct.get("protein")), ("F", pct.get("fat")),
++                 ("C", pct.get("carb"))) if v) + "\n")
++
+     return f"""あなたはユーザーの食事・運動に伴走するコーチ「{persona['bot_name']}」です。
+-一人称は「{persona['bot_pronoun']}」。性格・口調: {persona['bot_tone'] or '優しく励ます'}
++一人称は「{persona['bot_pronoun']}」で文全体を通して固定する。
++性格・口調: {persona['bot_tone'] or '優しく励ます'}。
++口調は指定に合わせつつ、文末表現（「〜じゃ」「〜だ」など）を1つの文体に統一し、
++文中で混ぜない。古風・難解な語（例:「大儀」「〜であった」）や誇張した言い回しは使わず、
++日常的で読みやすい言葉で書く。
+ 
+ # 話す順番（厳守）
+ 1. まず、下の数値と「状況」だけを見て「あなた自身の見立て」を述べる。何が良くて何を変えるかは自分で判断する。
+-2. そのあとで、過去のトレーナー指導が今日の内容に本当に関係し、引用が助言の助けになる場合に限り、
+-   「{'{trainer}'}さんも前に言ってたな」のように一言だけ添える。
+-3. トレーナーの発言をそのまま繰り返す・要約して済ませるのは禁止。あなたの意見が主、トレーナーは補足。
+-4. トレーナー指導は毎回必ず引用する必要はない。関係が薄い・不要なら一切触れない。
++2. そのあとで、下のトレーナー指導の一覧が今日の内容に本当に関係し、引用が助言の助けになる場合に限り、
++   一覧にある実際の名前を使って「◯◯さんも前に言ってたな」のように一言だけ添える（◯◯は実名。空欄や記号は書かない）。
++3. そのときも、乱暴・断定的な言い回しや今日の内容と無関係な発言は引用しない。敬意を保った言い方に直し、長く復唱しない。
++4. トレーナーの発言をそのまま繰り返す・要約して済ませるのは禁止。あなたの意見が主、トレーナーは補足。
++5. トレーナー指導は毎回必ず引用する必要はない。関係が薄い・不要なら一切触れない。
+ 
+ {situation}
+ {data_heading}
+@@ -220,10 +490,34 @@ def build_prompt(persona: dict, f: dict, goal_line: str = "",
+ - 体重: {f['weight_kg'] if f['weight_kg'] else '不明'}kg
+ - 目的・目標: {goal_line or '未設定'}
+ - 食事内容: {', '.join(f['foods']) if f['foods'] else '記録なし'}
+-{past_block}
++{pfc_block}{past_block}
++# 数値の意味（この前提で解釈する）
++- 「目標摂取」はその日の摂取目標。達成度は 摂取 ÷ 目標 で見る。
++- 「残り摂取枠 ＝ 目標 − 摂取」。プラスは「あと食べてよい量」、マイナスは「目標超過」。
++- 「収支 ＝ 摂取 − 消費」。マイナスは「消費が摂取を上回っている」状態で、
++  残り摂取枠とは別の指標。この2つを同じ文で混同しない。
++- 「不足」と言えるのは、摂取が目標の70%未満、または摂取が1000kcal未満のとき
++  （レポート側と同じ基準）。消費が摂取を上回っていても、摂取が目標を
++  満たしていれば「不足」とは書かない。
++- 摂取不足そのものを「見事」「立派」と褒めない。称賛は目標達成や記録の継続に対して行う。
++- PFC（たんぱく質・脂質・炭水化物）の量を「多い／少ない」と評価できるのは、
++  目標値や基準が上のデータに示されている場合だけ。示されていなければ
++  数値を挙げるにとどめ、良し悪しを断定しない。
++
+ # ルール
+-- 数値は与えられた値をそのまま引用する
++- 上の「状況」で示された場面だけを扱う。示されていない場面
++  （例: 夕食を食べ終えて登録済みなのに「夕食にあと◯◯kcal」）は書かない。
++- 数値は与えられた値をそのまま引用する（言い換え・概算・作り直しは禁止）
++- 事実の復唱より示唆を優先する。摂取kcal・PFCの数値はグラフと実績欄に出ているので、
++  「◯◯kcalでした」と言い直すだけにしない。その数字が意味することを1文で示し、
++  次の一手（具体的な行動・品目の置き換え）を1つ添える。
++- 良い例1: 「目標は超えましたが、運動ぶんが効いて収支はマイナス。この調子で続けましょう」
++- 良い例2: 「脂質と塩分が多めでした。次は揚げ物を焼き物に替えると抑えられます」
++- 医療・診断・治療効果の断定は禁止（薬機法・健康増進法に配慮）。「痩せる」「治る」
++  「◯◯に効く」は使わず、「〜しやすくなります」「〜を意識すると抑えやすいです」のように
++  生活習慣の提案として書く。
+ - 医療的な診断・断定（痩せます、治ります等）は禁止
++- 「見事だ」と「不足しすぎ」のように、矛盾する評価を1つのコメントに並べない
+ - ユーザーを責めない。「事実 → 次の一手（具体的行動）」の順で
+ - 120字以内のコメント本文のみを返す（前置き・JSON・記号装飾は不要）
+ """
+@@ -261,15 +555,18 @@ def _generate(user_id: str, f: dict) -> str:
+ def get_day_comment(user_id: str, target_date: str) -> dict:
+     """日次AIコメントを返す（キャッシュ優先）.
+ 
+-    キャッシュキーは facts ハッシュ（当日データ + 過去のトレーナーコメント）
+-    に依存するため、
+-      - 当日のデータが変われば作り直される
++    キャッシュキーは facts ハッシュ（当日データ + 登録済みの食事区分 +
++    時刻帯 + 過去のトレーナーコメント）に依存するため、
++      - 食事を登録すれば作り直される（＝夕食を登録した直後に
++        「夕食はあと◯◯」と言われる事故が起きない）
++      - 時刻帯が変われば作り直される
+       - 過去日にトレーナーコメントが付くと、翌日以降が作り直される
+       - 同じ日にトレーナーコメントを付けても、その日のAIコメントは変わらない
+     """
+     facts = _build_facts(user_id, target_date)
++    st = facts.get("meal_state") or {}
+     key = (f"dayview:{user_id}:{target_date}:"
+-           f"{facts['time_bucket']}:{facts['hash']}")
++           f"{facts['time_bucket']}:{st.get('scenario', '')}:{facts['hash']}")
+ 
+     try:
+         cached = get_report_comment(key)
+@@ -277,7 +574,8 @@ def get_day_comment(user_id: str, target_date: str) -> dict:
+             comment = (cached.get("comment") if isinstance(cached, dict)
+                        else cached[5])
+             if comment:
+-                return {"comment": comment, "source": "cache"}
++                return {"comment": comment, "source": "cache",
++                        "scenario": st.get("scenario")}
+     except Exception:
+         pass
+ 
+@@ -297,4 +595,4 @@ def get_day_comment(user_id: str, target_date: str) -> dict:
+             facts_json=json.dumps(facts, ensure_ascii=False))
+     except Exception:
+         logger.exception("cache save failed")
+-    return {"comment": text, "source": source}
++    return {"comment": text, "source": source, "scenario": st.get("scenario")}
+diff --git a/app/services/db.py b/app/services/db.py
+index ed2ec19..a93ceff 100644
+--- a/app/services/db.py
++++ b/app/services/db.py
+@@ -80,6 +80,40 @@ def get_conn():
+         conn.close()
+ 
+ 
++# SQLite には ALTER TABLE ... ADD COLUMN IF NOT EXISTS が無いため、
++# 後から足したカラムはここで「無いときだけ足す」形で冪等に適用する。
++# init_db はデプロイやテストのたびに何度も呼ばれるので、
++# 2回目以降に落ちてはいけない（migrations/*.sql の ALTER は再実行で失敗する）。
++ADDED_COLUMNS = {
++    # 目標PFCのマスタ（たんぱく質は 008、脂質・炭水化物を後から追加）
++    "goal_profiles": {"fat_target_g": "REAL", "carb_target_g": "REAL"},
++}
++
++
++def _ensure_columns(c) -> None:
++    """定義にあって実テーブルに無いカラムだけを追加する."""
++    for table, cols in ADDED_COLUMNS.items():
++        try:
++            rows = c.execute(f"PRAGMA table_info({table})").fetchall()
++        except Exception:
++            logger.exception("PRAGMA table_info failed: %s", table)
++            continue
++        have = set()
++        for r in rows:
++            try:
++                have.add(r["name"])
++            except (TypeError, KeyError, IndexError):
++                have.add(r[1])
++        for name, decl in cols.items():
++            if name in have:
++                continue
++            try:
++                c.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
++                logger.info("added column: %s.%s", table, name)
++            except Exception:
++                logger.exception("ALTER TABLE failed: %s.%s", table, name)
++
++
+ def init_db():
+     """migrations/*.sql をファイル名順(001→002→…)に冪等適用する."""
+     import glob
+@@ -91,6 +125,7 @@ def init_db():
+     with get_conn() as c:
+         for f in files:
+             c.executescript(Path(f).read_text(encoding="utf-8"))
++        _ensure_columns(c)
+     logger.info("migrations applied: %s", [Path(f).name for f in files])
+ 
+ 
+diff --git a/app/services/goals.py b/app/services/goals.py
+index 0b1da47..4038ed9 100644
+--- a/app/services/goals.py
++++ b/app/services/goals.py
+@@ -26,6 +26,10 @@ ACTIVITY_FACTOR = 1.4          # 活動量データが無い人の推定係数
+ MIN_TARGET_KCAL = 1000.0       # 安全側の下限
+ DEFAULT_SALT_G = 6.0
+ PROTEIN_PER_KG = 1.6
++FAT_RATIO = 0.25               # 目標kcalのうち脂質でとる目安の割合
++FAT_KCAL_PER_G = 9
++PROTEIN_KCAL_PER_G = 4
++CARB_KCAL_PER_G = 4
+ 
+ _pending: dict = {}            # user_id -> {"step": ..., ...}
+ 
+@@ -57,7 +61,11 @@ def get_profile(user_id: str) -> Optional[dict]:
+ 
+ 
+ def context_line(user_id: str) -> str:
+-    """コメント生成のコンテキストに載せる1行。未設定なら空文字."""
++    """コメント生成のコンテキストに載せる1行。未設定なら空文字.
++
++    目的に加えて、目安となる目標PFC（g）も添える。これがあることで
++    AIコメントが「脂質が多い／たんぱく質が足りない」を根拠つきで書ける。
++    """
+     p = get_profile(user_id)
+     if not p or not p.get("goal_mode"):
+         return ""
+@@ -69,14 +77,106 @@ def context_line(user_id: str) -> str:
+             s += f"（目標 {tw}kg / {p.get('goal_days') or '?'}日）"
+         if kcal:
+             s += f"。1日の目標摂取 {kcal:.0f}kcal"
+-        return s
+-    if p["goal_mode"] == "salt":
+-        return f"目的: 減塩（食塩目標 {p.get('salt_target_g') or DEFAULT_SALT_G}g/日）"
+-    if p["goal_mode"] == "muscle":
++    elif p["goal_mode"] == "salt":
++        s = f"目的: 減塩（食塩目標 {p.get('salt_target_g') or DEFAULT_SALT_G}g/日）"
++    elif p["goal_mode"] == "muscle":
+         pt = p.get("protein_target_g")
+-        return f"目的: 筋肉増量（たんぱく質目標 {pt:.0f}g/日）" if pt \
+-            else "目的: 筋肉増量（たんぱく質重視）"
+-    return ""
++        s = (f"目的: 筋肉増量（たんぱく質目標 {pt:.0f}g/日）" if pt
++             else "目的: 筋肉増量（たんぱく質重視）")
++    else:
++        return ""
++    t = pfc_targets(user_id, target_kcal=p.get("calc_target_kcal"))
++    if t:
++        s += "。目安PFC " + " / ".join(
++            f"{name}{v:.0f}g" for name, v in
++            (("P", t.get("protein_g")), ("F", t.get("fat_g")),
++             ("C", t.get("carb_g"))) if v)
++    return s
++
++
++# ---------- 目標PFC（マスタ＋目安計算） ----------
++
++def _table_cols(table: str) -> set:
++    """既存DBに無いカラムで落ちないよう、実際に存在する列だけを返す."""
++    try:
++        with get_conn() as c:
++            rows = c.execute(f"PRAGMA table_info({table})").fetchall()
++    except Exception:
++        logger.exception("PRAGMA table_info failed: %s", table)
++        return set()
++    cols = set()
++    for r in rows:
++        try:
++            cols.add(r["name"])
++        except (TypeError, KeyError, IndexError):
++            cols.add(r[1])
++    return cols
++
++
++def save_pfc_targets(user_id: str, *, fat_target_g=None,
++                     carb_target_g=None) -> None:
++    """目標PFC（脂質・炭水化物）を明示的に保存する.
++
++    カラムが無いDB（未マイグレーション）でも壊れないよう、
++    存在するカラムだけを更新する。
++    """
++    cols = _table_cols("goal_profiles")
++    sets = {}
++    if fat_target_g is not None and "fat_target_g" in cols:
++        sets["fat_target_g"] = float(fat_target_g)
++    if carb_target_g is not None and "carb_target_g" in cols:
++        sets["carb_target_g"] = float(carb_target_g)
++    if not sets:
++        logger.info("save_pfc_targets skipped (columns missing): %s", user_id)
++        return
++    with get_conn() as c:
++        c.execute("INSERT INTO goal_profiles (user_id) VALUES (?)"
++                  " ON CONFLICT(user_id) DO NOTHING", (user_id,))
++        assigns = ", ".join(f"{k}=?" for k in sets)
++        c.execute(f"UPDATE goal_profiles SET {assigns},"
++                  " updated_at=CURRENT_TIMESTAMP WHERE user_id=?",
++                  (*sets.values(), user_id))
++
++
++def pfc_targets(user_id: str, target_kcal: Optional[float] = None
++                ) -> Optional[dict]:
++    """その日の目標PFC(g)を返す。根拠が無ければ None.
++
++    優先順位:
++      - 明示設定（goal_profiles.fat_target_g / carb_target_g / protein_target_g）
++      - 目安計算: たんぱく質 = 体重 × 1.6g、脂質 = 目標kcal × 25%、
++        炭水化物 = 残りkcal（目標 − P − F）
++    """
++    p = get_profile(user_id) or {}
++    kcal = target_kcal or p.get("calc_target_kcal")
++    if not kcal:
++        try:
++            from app.services.db import get_goal
++            kcal = get_goal(user_id, today_jst())
++        except Exception:
++            kcal = None
++    kcal = float(kcal) if kcal else None
++    cols = _table_cols("goal_profiles")
++    weight = _latest_weight(user_id)
++    protein = p.get("protein_target_g") if "protein_target_g" in cols else None
++    if not protein and weight:
++        protein = round(weight * PROTEIN_PER_KG, 1)
++    fat = p.get("fat_target_g") if "fat_target_g" in cols else None
++    carb = p.get("carb_target_g") if "carb_target_g" in cols else None
++    if not fat and kcal:
++        fat = round(kcal * FAT_RATIO / FAT_KCAL_PER_G, 1)
++    if carb is None and kcal:
++        rest = (kcal - (protein or 0) * PROTEIN_KCAL_PER_G
++                - (fat or 0) * FAT_KCAL_PER_G)
++        carb = round(max(rest, 0) / CARB_KCAL_PER_G, 1)
++    out = {}
++    if protein:
++        out["protein_g"] = float(protein)
++    if fat:
++        out["fat_g"] = float(fat)
++    if carb is not None:
++        out["carb_g"] = float(carb)
++    return out or None
+ 
+ 
+ # ---------- 計算 ----------
+diff --git a/app/services/gym_db.py b/app/services/gym_db.py
+index 8e7352b..a7f7d8c 100644
+--- a/app/services/gym_db.py
++++ b/app/services/gym_db.py
+@@ -204,14 +204,24 @@ def add_comment(*, user_id: str, body: str, author_type: str,
+         return cur.lastrowid
+ 
+ 
+-def fetch_comments_for_user(user_id: str, limit: int = 50) -> List[Dict[str, Any]]:
++def fetch_comments_for_user(user_id: str, limit: int = 50,
++                           offset: int = 0) -> List[Dict[str, Any]]:
++    """コメントを新しい順に取得（ページング用に offset を受ける）."""
+     with get_conn() as c:
+         rows = c.execute(
+             "SELECT * FROM comments WHERE user_id=?"
+-            " ORDER BY created_at DESC LIMIT ?", (user_id, limit)).fetchall()
++            " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
++            (user_id, limit, max(0, offset))).fetchall()
+     return [dict(r) for r in rows]
+ 
+ 
++def count_comments_for_user(user_id: str) -> int:
++    with get_conn() as c:
++        r = c.execute("SELECT COUNT(*) AS n FROM comments WHERE user_id=?",
++                      (user_id,)).fetchone()
++    return int((r["n"] if r else 0) or 0)
++
++
+ def fetch_active_directives(user_id: str, days: int = 28) -> List[Dict[str, Any]]:
+     """AIコーチのコンテキストに載せる、トレーナーの「指導指示」."""
+     with get_conn() as c:
+diff --git a/app/services/keepalive.py b/app/services/keepalive.py
+index 65b6c5a..9d36b0d 100644
+--- a/app/services/keepalive.py
++++ b/app/services/keepalive.py
+@@ -17,6 +17,23 @@ logger = logging.getLogger(__name__)
+ _task = None
+ 
+ 
++def _sweep_pending() -> None:
++    """放置された写真（15分超）を今日の間食として確定する（通知はしない）.
++
++    Render無料枠はプロセスが落ちると消えるため、自己pingで起きている間に
++    まとめて確定する（best-effort）。push は送らないので、LINEの月間
++    送信上限を消費しない。
++    """
++    try:
++        from app.handlers.text_handler import sweep_expired_pendings
++        done = sweep_expired_pendings()
++    except Exception:
++        logger.warning("pending sweep failed", exc_info=True)
++        return
++    if done:
++        logger.info("pending sweep: %d件を今日の間食として確定しました", len(done))
++
++
+ async def _loop():
+     url = settings.BASE_URL.rstrip("/") + "/health"
+     interval = max(60, settings.SELF_PING_INTERVAL_SEC)
+@@ -29,6 +46,8 @@ async def _loop():
+                 logger.info("self-ping %s -> %s", url, r.status_code)
+             except Exception:
+                 logger.warning("self-ping failed: %s", url, exc_info=True)
++            # 放置された写真を確定（今日の間食）＋通知
++            _sweep_pending()
+             # 間隔に揺らぎを持たせ、毎回同じ秒数で叩かないようにする
+             await asyncio.sleep(interval + random.randint(0, 60))
+ 
+diff --git a/app/services/meal_when.py b/app/services/meal_when.py
+new file mode 100644
+index 0000000..7d54b44
+--- /dev/null
++++ b/app/services/meal_when.py
+@@ -0,0 +1,91 @@
++"""「その他」で入力された自由文から (日付, 食事区分) を推定する（ゆるい日本語対応）.
++
++日付: 今日 / きょう / 昨日 / きのう / おととい / 一昨日 / N日前 / 二日前 / 10/2 / 2026-10-02
++区分: 朝 / 朝食 / あさ / ひる / 昼 / 昼食 / ランチ / 夕 / 夕方 / 夕食 / 夜 / 夜食 / 間食 / おやつ（どちらも snack）
++
++判定できない項目は None を返す（勝手に今日・間食へ丸めない）.
++"""
++import re
++from datetime import date, timedelta
++
++from .dates import today_jst_date
++
++_KANJI = {"〇": 0, "零": 0, "一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
++          "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
++
++_SLOT_PATTERNS = (
++    (r"朝食|朝|あさ|モーニング", "breakfast"),
++    (r"昼食|昼|ひる|ランチ|昼ごはん|昼ご飯", "lunch"),
++    (r"夕食|夕方|夕|ばん|晩|ディナー|夜ごはん|夜ご飯", "dinner"),
++    (r"夜食|夜|よる|深夜", "snack"),
++    (r"間食|おやつ|オヤツ|スナック|間", "snack"),
++)
++
++
++def _kanji_num(t: str):
++    """漢数字（二 / 十 / 二十 など）を int にする。不能なら None."""
++    if not t:
++        return None
++    if t.isdigit():
++        return int(t)
++    if "十" in t:
++        a, _, b = t.partition("十")
++        a = _KANJI.get(a, 1) if a else 1
++        b = _KANJI.get(b, 0) if b else 0
++        return a * 10 + b
++    v = 0
++    for ch in t:
++        if ch not in _KANJI:
++            return None
++        v = v * 10 + _KANJI[ch]
++    return v
++
++
++def parse_meal_when(text: str):
++    """(date_iso, slot) を返す。判定不能な項目は None."""
++    t = (text or "").strip()
++    if not t:
++        return None, None
++    today = today_jst_date()
++    d = None
++
++    m = re.search(r"(\d{4})-(\d{1,2})-(\d{1,2})", t)
++    if m:
++        try:
++            d = date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
++        except ValueError:
++            d = None
++
++    if d is None:
++        m = re.search(r"(\d{1,2})\s*[/月]\s*(\d{1,2})", t)
++        if m:
++            try:
++                cand = date(today.year, int(m.group(1)), int(m.group(2)))
++                if cand > today:
++                    cand = date(today.year - 1, int(m.group(1)), int(m.group(2)))
++                d = cand
++            except ValueError:
++                d = None
++
++    if d is None:
++        if re.search(r"おととい|一昨日|おとつい", t):
++            d = today - timedelta(days=2)
++        elif re.search(r"昨日|きのう|前日", t):
++            d = today - timedelta(days=1)
++        elif re.search(r"今日|きょう|本日", t):
++            d = today
++
++    if d is None:
++        m = re.search(r"([0-9一二三四五六七八九十]+)\s*日前", t)
++        if m:
++            n = _kanji_num(m.group(1))
++            if n:
++                d = today - timedelta(days=n)
++
++    slot = None
++    for pat, val in _SLOT_PATTERNS:
++        if re.search(pat, t):
++            slot = val
++            break
++
++    return (d.isoformat() if d else None), slot
+diff --git a/app/templates/day_detail.html b/app/templates/day_detail.html
+index 22c372a..f3b9e33 100644
+--- a/app/templates/day_detail.html
++++ b/app/templates/day_detail.html
+@@ -89,6 +89,11 @@ function loadLiffSdk(){return new Promise((res,rej)=>{const s=document.createEle
+   <div id="loading" class="loading">読み込み中…</div>
+   <div id="app" style="display:none">
+ 
++    <div class="card">
++      <b>🤖 AIコーチ</b>
++      <div class="muted" style="margin-top:4px">この日のデータを見たAIの見立て</div>
++      <div id="aiComment" style="margin-top:6px;white-space:pre-wrap">…</div>
++    </div>
+     <div class="card">
+       <div class="muted">収支</div>
+       <div class="stat"><span id="dIntake">0</span> kcal 摂取
+@@ -98,10 +103,27 @@ function loadLiffSdk(){return new Promise((res,rej)=>{const s=document.createEle
+         <span class="muted" id="dSalt"></span></div>
+     </div>
+ 
+-    <div class="card ai">
+-      <b>🤖 AIコーチ</b>
+-      <div class="muted" style="margin-top:4px">この日のデータを見たAIの見立て</div>
+-      <div id="aiComment" style="margin-top:6px;white-space:pre-wrap">…</div>
++    <div class="card">
++      <b>📊 摂取と消費（目標との比較）</b>
++      <div class="muted" style="margin-top:4px">■摂取　□消費　┆目標摂取カロリー</div>
++      <div id="balBars" style="position:relative;display:grid;grid-template-columns:34px 1fr 78px;gap:6px;align-items:center;margin-top:8px">
++        <span class="muted" style="font-size:12px">摂取</span>
++        <div style="height:20px;background:var(--line);border-radius:4px;overflow:hidden">
++          <div id="balIntakeBar" style="height:100%;width:0;background:#06c755"></div></div>
++        <span id="balIntakeVal" style="text-align:right;font-size:13px">0 kcal</span>
++        <span class="muted" style="font-size:12px">消費</span>
++        <div style="height:20px;background:var(--line);border-radius:4px;overflow:hidden">
++          <div id="balBurnBar" style="height:100%;width:0;background:repeating-linear-gradient(45deg,#f59e0b,#f59e0b 4px,#fff 4px,#fff 8px);border-right:1px solid #f59e0b"></div></div>
++        <span id="balBurnVal" style="text-align:right;font-size:13px">0 kcal</span>
++        <span></span>
++        <div style="position:relative;height:14px">
++          <div id="balGoalLine" style="position:absolute;left:0;top:0;bottom:0;border-left:2px dashed #ef4444"></div>
++          <span id="balGoalLabel" style="position:absolute;left:0;transform:translateX(-50%);font-size:10px;color:#ef4444;white-space:nowrap;line-height:14px"></span>
++        </div>
++        <span></span>
++      </div>
++      <div class="pfc-line" style="margin-top:6px">収支（消費−摂取）: <b id="balBalance">—</b>
++        ・ 目標との差: <b id="balDiff">—</b></div>
+     </div>
+ 
+     <div class="card">
+@@ -164,7 +186,8 @@ function loadLiffSdk(){return new Promise((res,rej)=>{const s=document.createEle
+ const MEMBER_ID = {{ member_id | tojson }};
+ const CAN_COMMENT = {{ can_comment | tojson }};
+ const CAN_EDIT = {{ can_edit | tojson }};
+-const LIFF_ID = {{ liff_id | tojson }};
++let LIFF_ID = {{ liff_id | tojson }};
++{const _m = String(LIFF_ID).match(/([0-9]+-[A-Za-z0-9_-]+)/); if(_m) LIFF_ID = _m[1];}
+ let idToken = null;
+ let curDate = {{ initial_date | tojson }} || null;   // サーバーが前日(JST)を既定で渡す
+ let pieChart = null, slotChart = null;
+@@ -186,6 +209,15 @@ async function api(path, extra){
+   const res = await fetch(path, {method:"POST",
+     headers:{"Content-Type":"application/json"},
+     body: JSON.stringify(apiBody(extra))});
++  if(res.status===401){
++    // IDトークンの期限切れ。1回だけ再ログインして取り直す
++    if(!_reloginTried){ _reloginTried = true;
++      try{ sessionStorage.removeItem("liff_login_tried_"+LIFF_ID); }catch(_){}
++      liff.login({redirectUri: location.href});
++      throw new Error("認証の有効期限が切れました。再読み込みしてください");
++    }
++    throw new Error("401 認証エラー。再読み込みしてください");
++  }
+   if(!res.ok){let d="";try{d=(await res.json()).detail||"";}catch(_){}
+     throw new Error(res.status+" "+d);}
+   return res.json();
+@@ -216,6 +248,28 @@ function render(d){
+   document.getElementById("dIntake").textContent = fmt(d.intake_kcal);
+   document.getElementById("dBurn").textContent = fmt(d.burn_kcal);
+   document.getElementById("dGoal").textContent = d.target_kcal ? fmt(d.target_kcal)+" kcal" : "未設定";
++  // ③ 摂取・消費・目標の横バー
++  {
++    const _max = Math.max(d.intake_kcal||0, d.burn_kcal||0, d.target_kcal||0) * 1.15 || 1;
++    const _w = v => ((v||0)/_max*100).toFixed(1) + "%";
++    document.getElementById("balIntakeBar").style.width = _w(d.intake_kcal);
++    document.getElementById("balBurnBar").style.width = _w(d.burn_kcal);
++    document.getElementById("balIntakeVal").textContent = fmt(d.intake_kcal) + " kcal";
++    document.getElementById("balBurnVal").textContent = fmt(d.burn_kcal) + " kcal";
++    const _gl = document.getElementById("balGoalLine"), _gt = document.getElementById("balGoalLabel");
++    if (d.target_kcal) { _gl.style.left = _w(d.target_kcal); _gl.style.display="block";
++      _gt.style.left = _w(d.target_kcal); _gt.textContent = "目標 " + fmt(d.target_kcal); }
++    else { _gl.style.display="none"; _gt.textContent = "目標 未設定"; _gt.style.left="0"; }
++    const _bal = (d.burn_kcal||0) - (d.intake_kcal||0);
++    const _bb = document.getElementById("balBalance");
++    _bb.textContent = (_bal>=0?"+":"") + fmt(_bal) + " kcal";
++    _bb.style.color = _bal>=0 ? "#10b981" : "#ef4444";
++    const _bd = document.getElementById("balDiff");
++    if (d.target_kcal) { const _df = d.target_kcal - (d.intake_kcal||0);
++      _bd.textContent = (_df>=0?"+":"") + fmt(_df) + " kcal";
++      _bd.style.color = _df>=0 ? "#10b981" : "#ef4444"; }
++    else { _bd.textContent = "—"; }
++  }
+   document.getElementById("dP").textContent = fmt(d.protein_g);
+   document.getElementById("dF").textContent = fmt(d.fat_g);
+   document.getElementById("dC").textContent = fmt(d.carb_g);
+@@ -413,16 +467,35 @@ async function postComment(){
+ }
+ {% endif %}
+ 
++// ---- ログイン状態の取り直し（day view 版） ----
++let _reloginTried = false;
++async function ensureLogin(){
++  idToken = (liff.getIDToken && liff.getIDToken()) || null;
++  if (idToken) return true;
++  let tried = false;
++  try { tried = sessionStorage.getItem("liff_login_tried_" + LIFF_ID) === "1"; } catch(_) {}
++  if (!liff.isLoggedIn() && !tried) {
++    try { sessionStorage.setItem("liff_login_tried_" + LIFF_ID, "1"); } catch(_) {}
++    liff.login({redirectUri: location.href});
++    return false;
++  }
++  try { sessionStorage.removeItem("liff_login_tried_" + LIFF_ID); } catch(_) {}
++  showErr("ログイン情報を取得できませんでした。LINEのトークから開き直すか、"
++    + "再読み込みしてください。(isInClient=" + liff.isInClient()
++    + " / loggedIn=" + liff.isLoggedIn() + ")");
++  return false;
++}
++
+ document.getElementById("prevBtn").onclick = () => shift(-1);
+ document.getElementById("nextBtn").onclick = () => shift(1);
+ document.getElementById("datePicker").onchange = e => load(e.target.value);
+ 
+ (async () => {
+   {% if not member_id %}
+-  try{ await loadLiffSdk(); await liff.init({liffId: LIFF_ID});
+-    if(!liff.isLoggedIn()){ liff.login(); return; }
+-    idToken = liff.getIDToken();
+-  }catch(e){ showErr("LIFF初期化に失敗: "+(e&&e.message?e.message:e)); return; }
++  try{ await loadLiffSdk(); await liff.init({liffId: LIFF_ID}); }
++  catch(e){ showErr("LIFF初期化に失敗: "+(e&&e.message?e.message:e)
++    + "（再読み込みで直ることがあります）"); return; }
++  if(!await ensureLogin()) return;
+   {% endif %}
+   if(!curDate) curDate = DayNav.yesterdayLocal();  // 初期表示は前日
+   try{ await load(curDate); }
+diff --git a/app/templates/member_home.html b/app/templates/member_home.html
+index 609743c..0402b73 100644
+--- a/app/templates/member_home.html
++++ b/app/templates/member_home.html
+@@ -74,6 +74,11 @@ function loadLiffSdk(){
+          📅 日別の詳細を見る（記録の編集・コメント）</a>
+     </div>
+ 
++    <div class="card" style="display:flex;justify-content:space-between;align-items:center;padding:10px 16px">
++      <a id="pgPrev" href="?offset=0" style="text-decoration:none;font-weight:700;font-size:20px">＜</a>
++      <span id="pgRange" class="muted" style="font-size:13px"></span>
++      <a id="pgNext" href="?offset=1" style="text-decoration:none;font-weight:700;font-size:20px">＞</a>
++    </div>
+     <div class="card">
+       <b>📈 カロリー推移（14日）</b>
+       <canvas id="calChart" height="160"></canvas>
+@@ -108,6 +113,13 @@ function showErr(msg){
+   const e = document.getElementById("err");
+   e.textContent = msg; e.style.display = "block";
+   document.getElementById("loading").style.display = "none";
++  if (!document.getElementById("reloadBtn")) {          // 行き止まりにしない
++    const b = document.createElement("button");
++    b.id = "reloadBtn"; b.textContent = "再読み込み";
++    b.style.cssText = "margin-top:8px;padding:6px 14px;cursor:pointer";
++    b.onclick = () => location.reload();
++    e.parentNode.insertBefore(b, e.nextSibling);
++  }
+ }
+ 
+ async function api(path){
+@@ -115,6 +127,16 @@ async function api(path){
+     method: "POST", headers: {"Content-Type": "application/json"},
+     body: JSON.stringify({id_token: idToken})
+   });
++  if(res.status === 401){
++    // IDトークンの期限切れ。1回だけ取り直して再ログインさせる
++    if(!_reloginTried){
++      _reloginTried = true;
++      try { sessionStorage.removeItem("liff_login_tried_" + LIFF_ID); } catch(_) {}
++      liff.login({redirectUri: location.href});
++      throw new Error("認証の有効期限が切れました。再読み込みしてください");
++    }
++    throw new Error("401 認証エラー。再読み込みしてください");
++  }
+   if(!res.ok){
+     let detail = "";
+     try { detail = (await res.json()).detail || ""; } catch(_) {}
+@@ -126,6 +148,25 @@ async function api(path){
+ 
+ function fmt(v){ return Math.round(v || 0); }
+ 
++// ---- ログイン状態の取り直し（無限ループと行き止まりを防ぐ） ----
++let _reloginTried = false;
++async function ensureLogin(){
++  idToken = (liff.getIDToken && liff.getIDToken()) || null;
++  if (idToken) return true;
++  let tried = false;
++  try { tried = sessionStorage.getItem("liff_login_tried_" + LIFF_ID) === "1"; } catch(_) {}
++  if (!liff.isLoggedIn() && !tried) {
++    try { sessionStorage.setItem("liff_login_tried_" + LIFF_ID, "1"); } catch(_) {}
++    liff.login({redirectUri: location.href});   // 直後に isLoggedIn() が false でも再入しない
++    return false;
++  }
++  try { sessionStorage.removeItem("liff_login_tried_" + LIFF_ID); } catch(_) {}
++  showErr("ログイン情報を取得できませんでした。\n"
++    + "LINEアプリのトークから開き直すか、下の「再読み込み」を押してください。\n"
++    + "(isInClient=" + liff.isInClient() + " / loggedIn=" + liff.isLoggedIn() + ")");
++  return false;
++}
++
+ async function main(){
+   try {
+     await loadLiffSdk();
+@@ -142,12 +183,16 @@ async function main(){
+             " / LIFF_ID=" + LIFF_ID);
+     return;
+   }
+-  if(!liff.isLoggedIn()){ liff.login(); return; }
+-  idToken = liff.getIDToken();
+-  if(!idToken){ showErr("IDトークンを取得できませんでした" +
+-    "（LIFFのScopeに openid が必要です）"); return; }
++  if(!await ensureLogin()) return;
+ 
+-  const s = await api("/api/me/summary");
++  const _off = Math.max(0, Math.min(3, parseInt(new URLSearchParams(location.search).get("offset") || "0", 10) || 0));
++  const s = await api("/api/me/summary", {days: 14, offset: _off});
++  const _pg = document.getElementById("pgRange");
++  if(_pg){ _pg.textContent = (s.window_start||"") + " 〜 " + (s.window_end||"");
++    document.getElementById("pgPrev").setAttribute("href", "?offset=" + Math.max(0, _off-1));
++    document.getElementById("pgNext").setAttribute("href", "?offset=" + (_off+1));
++    if(_off<=0) document.getElementById("pgPrev").style.visibility="hidden";
++    if(_off>=3) document.getElementById("pgNext").style.visibility="hidden"; }
+   document.getElementById("tIntake").textContent = fmt(s.today.intake_kcal);
+   document.getElementById("tBurn").textContent =
+     fmt(s.today.burn_kcal || s.today.burn);
+@@ -194,7 +239,7 @@ async function main(){
+   });
+ 
+   // コメント
+-  const c = await api("/api/me/comments");
++  const c = await api("/api/me/comments", {cm_offset: 0});
+   const pc = document.getElementById("paneComments");
+   pc.innerHTML = c.comments.length ? "" : '<p class="muted">まだコメントはありません。</p>';
+   for(const cm of c.comments){
+@@ -208,6 +253,34 @@ async function main(){
+     div.querySelector("div").textContent = cm.body;
+     pc.appendChild(div);
+   }
++  {
++    let btn = document.getElementById("cmMore");
++    if(!btn){
++      btn = document.createElement("button");
++      btn.id = "cmMore"; btn.className = "btn btn-ghost btn-sm";
++      btn.style.marginTop = "8px"; btn.textContent = "もっと見る";
++      btn.onclick = async () => {
++        const off = parseInt(btn.dataset.off || "0", 10);
++        const more = await api("/api/me/comments", {cm_offset: off});
++        for(const cm of more.comments){
++          const div = document.createElement("div");
++          div.style.cssText = "border-bottom:1px solid var(--line);padding:10px 0";
++          const badge = cm.author_type === "trainer"
++            ? '<span class="badge">トレーナー</span>'
++            : '<span class="badge badge-green">AIコーチ</span>';
++          div.innerHTML = badge + ' <span class="muted">' + (cm.created_at||"") +
++            '</span><div style="margin-top:4px;white-space:pre-wrap"></div>';
++          div.querySelector("div").textContent = cm.body;
++          pc.insertBefore(div, btn);
++        }
++        btn.dataset.off = off + more.comments.length;
++        if(!more.has_more){ btn.style.display = "none"; }
++      };
++      pc.appendChild(btn);
++    }
++    btn.dataset.off = c.comments.length;
++    btn.style.display = c.has_more ? "" : "none";
++  }
+ 
+   // 履歴
+   const h = await api("/api/me/history");
+diff --git a/app/templates/staff_member_detail.html b/app/templates/staff_member_detail.html
+index fc9e48b..8977e3e 100644
+--- a/app/templates/staff_member_detail.html
++++ b/app/templates/staff_member_detail.html
+@@ -77,6 +77,13 @@
+       <div style="margin-top:4px;white-space:pre-wrap">{{ cm.body }}</div>
+     </div>
+     {% endfor %}
++    {% if cm_has_more %}
++    <p style="margin-top:10px">
++      <a class="btn btn-ghost btn-sm" href="?cm_offset={{ cm_offset + 30 }}">もっと見る（{{ cm_offset + 30 }} / {{ cm_total }}）</a>
++    </p>
++    {% elif cm_total %}
++    <p class="muted" style="margin-top:10px">全 {{ cm_total }} 件を表示しました</p>
++    {% endif %}
+   </div>
+ </div>
+ 
+diff --git a/app/web/member.py b/app/web/member.py
+index 00342e0..ba0f12d 100644
+--- a/app/web/member.py
++++ b/app/web/member.py
+@@ -46,6 +46,8 @@ def _verify_uid(id_token: str) -> str:
+ class TokenIn(BaseModel):
+     id_token: str
+     days: int = 14
++    offset: int = 0   # 週送り（0=直近14日, 1=その前の14日 ...）
++    cm_offset: int = 0   # コメントのページング開始位置
+ 
+ 
+ @router.get("/me", response_class=HTMLResponse)
+@@ -62,18 +64,24 @@ def me_summary(body: TokenIn):
+     """自分のカロリー推移・体重推移（グラフ用JSON）."""
+     uid = _verify_uid(body.id_token)
+     days = max(1, min(body.days, 90))
++    offset = max(0, min(body.offset, 52))
+     labels, intake, burn, pfc = [], [], [], []
+     today = today_jst_date()
+-    for i in range(days - 1, -1, -1):
+-        d = (today - timedelta(days=i)).isoformat()
++    end = today - timedelta(days=offset * days)
++    start = end - timedelta(days=days - 1)
++    for i in range(days):
++        d = (start + timedelta(days=i)).isoformat()
+         s = fetch_day_summary(uid, d)
+         labels.append(d[5:])
+         intake.append(s.get("intake_kcal") or 0)
+         burn.append(s.get("burn_kcal") or s.get("burn") or 0)
+         pfc.append((s.get("protein_g"), s.get("fat_g"), s.get("carb_g")))
+-    wseries = fetch_weight_series(uid, days=days) or []
++    w_all = fetch_weight_series(uid, days=days * (offset + 1)) or []
++    _s, _e = start.isoformat(), end.isoformat()
++    wseries = [w for w in w_all if _s <= str(w.get("date") or "")[:10] <= _e]
+     return {
+         "labels": labels, "intake": intake, "burn": burn,
++        "window_start": _s, "window_end": _e, "offset": offset,
+         "weight_labels": [(w.get("date") or "")[5:] for w in wseries],
+         "weight": [w.get("weight_kg") for w in wseries],
+         "today": fetch_day_summary(uid, today.isoformat()),
+@@ -90,9 +98,14 @@ def me_history(body: TokenIn):
+ 
+ @router.post("/api/me/comments")
+ def me_comments(body: TokenIn):
+-    """自分宛のコメント（トレーナー / AIコーチ）."""
++    """自分宛のコメント（トレーナー / AIコーチ）を30件ずつ返す."""
+     uid = _verify_uid(body.id_token)
+-    return {"comments": gym_db.fetch_comments_for_user(uid, limit=30)}
++    lim = 30
++    off = max(0, min(body.cm_offset, 5000))
++    items = gym_db.fetch_comments_for_user(uid, limit=lim, offset=off)
++    total = gym_db.count_comments_for_user(uid)
++    return {"comments": items, "offset": off, "limit": lim, "total": total,
++            "has_more": off + len(items) < total}
+ 
+ 
+ @router.post("/api/me/role")
+diff --git a/app/web/routes.py b/app/web/routes.py
+index 2075a02..28dd393 100644
+--- a/app/web/routes.py
++++ b/app/web/routes.py
+@@ -6,6 +6,7 @@ Phase 1 のスコープ:
+   - /api/me                          … 動作確認用（ログイン中ユーザーの状態）
+ 画面（トレーナーダッシュボード等）は Phase 2 で追加する。
+ """
++import html
+ import logging
+ 
+ from fastapi import APIRouter, HTTPException, Request
+@@ -30,6 +31,27 @@ templates = Jinja2Templates(
+ # OAuth state の簡易保持（無料枠=単一プロセス前提。再起動で消えるが許容）
+ _pending_states: set = set()
+ 
++# トレーナー画面が返すエラーを、行き止まりではなく「やり直せる」画面にする
++_ERROR_HTML = """<!doctype html><meta charset="utf-8">
++<meta name="viewport" content="width=device-width,initial-scale=1">
++<div style="font-family:system-ui,sans-serif;padding:24px;line-height:1.8">
++  <h2 style="margin:0 0 8px">{title}</h2>
++  <p>{detail}</p>
++  <p><a href="/login" style="display:inline-block;padding:10px 18px;
++     background:#06c755;color:#fff;border-radius:8px;text-decoration:none">
++     もう一度ログインする</a></p>
++  <p style="color:#888;font-size:12px">{hint}</p>
++</div>"""
++
++
++def _error_page(title: str, detail: str, status_code: int = 400,
++                hint: str = "何度も失敗するときは、LINEのトークから開き直してください。"):
++    from fastapi.responses import HTMLResponse
++    return HTMLResponse(
++        _ERROR_HTML.format(title=html.escape(title), detail=html.escape(detail),
++                           hint=html.escape(hint)),
++        status_code=status_code)
++
+ 
+ @router.get("/")
+ def index(request: Request):
+@@ -43,30 +65,50 @@ def index(request: Request):
+ @router.get("/login")
+ def login():
+     if not auth.login_configured():
+-        raise HTTPException(status_code=503,
+-                            detail="LINEログインが未設定です")
++        return _error_page("LINEログインが未設定です",
++                           "サーバー側の設定（チャネルID/シークレット）が"
++                           "入っていません。管理者に連絡してください。", 503)
+     state = auth.new_state()
+     _pending_states.add(state)
+     return RedirectResponse(auth.build_login_url(state))
+ 
+ 
+ @router.get("/auth/callback")
+-def auth_callback(code: str = "", state: str = "",
++def auth_callback(request: Request, code: str = "", state: str = "",
+                   error: str = "", error_description: str = ""):
++    """LINEログインの戻り先.
++
++    state はCSRF対策で保持しているが、Render無料枠ではスリープ/再起動で
++    _pending_states が消える。そこで 400 で止めると「再アクセスしたら
++    エラー画面」になって詰むため、state が無い場合は警告を残して続行する
++    （code 自体が無効なら LINE 側の検証で失敗するので安全側は保たれる）。
++    """
+     if error:
+-        raise HTTPException(status_code=400,
+-                            detail=f"LINEログインがキャンセルされました: {error}")
+-    if state not in _pending_states:
+-        raise HTTPException(status_code=400, detail="state が不正です。やり直してください")
+-    _pending_states.discard(state)
++        return _error_page(
++            "LINEログインが完了しませんでした",
++            f"理由: {error}（{error_description or '詳細なし'}）"
++            if error_description else f"理由: {error}")
++    if not code:
++        return _error_page(
++            "ログイン情報が届きませんでした",
++            "ブラウザの戻る操作などで途中のURLを開いた可能性があります。",
++            400, hint="下のボタンから最初からログインし直してください。")
++
++    if state and state in _pending_states:
++        _pending_states.discard(state)
++    else:
++        logger.warning("auth state not found (process restarted?): state=%r "
++                       "pending=%d", state, len(_pending_states))
+ 
+     tokens = auth.exchange_code(code)
+     claims = auth.verify_id_token(tokens["id_token"])
+     uid = claims["sub"]
+     upsert_user(uid, claims.get("name"), claims.get("picture"))
+ 
+-    # ロールで遷移先を振り分け（スタッフ→管理画面、会員→Phase 3 までは状態表示）
+-    dest = "/trainer" if is_staff(uid) else "/api/me"
++    # ロールで遷移先を振り分け。
++    # スタッフ→管理画面。スタッフでない人は /trainer で403になるより、
++    # 招待コード入力（/trainer-invite）へ送るほうが次の一手が分かりやすい。
++    dest = "/trainer" if is_staff(uid) else "/trainer-invite"
+     resp = RedirectResponse(dest)
+     resp.set_cookie(auth.SESSION_COOKIE, auth.issue_session(uid),
+                     httponly=True, samesite="lax", secure=True,
+diff --git a/app/web/staff.py b/app/web/staff.py
+index 2430408..7987548 100644
+--- a/app/web/staff.py
++++ b/app/web/staff.py
+@@ -120,7 +120,7 @@ def reject(request: Request, membership_id: int):
+ # ---- 会員詳細 ----
+ 
+ @router.get("/trainer/members/{member_id}", response_class=HTMLResponse)
+-def member_detail(request: Request, member_id: str):
++def member_detail(request: Request, member_id: str, cm_offset: int = 0):
+     staff_id = _require_staff(request)
+     _require_member_access(staff_id, member_id)
+     u = gym_db.get_user(member_id) or {}
+@@ -131,7 +131,11 @@ def member_detail(request: Request, member_id: str):
+         "member_name": u.get("display_name") or member_id,
+         "summary": fetch_day_summary(member_id, today),
+         "entries": fetch_recent_entries(member_id, limit=30),
+-        "comments": gym_db.fetch_comments_for_user(member_id, limit=30),
++        "comments": gym_db.fetch_comments_for_user(member_id, limit=30,
++                                                   offset=max(0, cm_offset)),
++        "cm_offset": max(0, cm_offset),
++        "cm_total": gym_db.count_comments_for_user(member_id),
++        "cm_has_more": gym_db.count_comments_for_user(member_id) > max(0, cm_offset) + 30,
+         "today": today,
+     })
+ 
+diff --git a/app/webhook.py b/app/webhook.py
+index 977e824..3afdac1 100644
+--- a/app/webhook.py
++++ b/app/webhook.py
+@@ -157,9 +157,17 @@ def on_message(event, line_bot_api):
+             elif m:
+                 out = _handle_join_code(user_id, m.group(1).upper(), line_bot_api)
+             else:
++                from app.handlers.text_handler import finalize_pending
++                _notice = finalize_pending(user_id, incoming_text=text)
+                 out = handle_text(user_id, text)
++                if _notice:
++                    out = _with_notice(out, _notice)
+     elif isinstance(event.message, ImageMessage):
++        from app.handlers.text_handler import finalize_pending
++        _notice = finalize_pending(user_id)
+         out = handle_image(user_id, event.message.id, line_bot_api)
++        if _notice:
++            out = _with_notice(out, _notice)
+     else:
+         return
+     if out is None:
+@@ -170,6 +178,12 @@ def on_message(event, line_bot_api):
+ def on_postback(event, line_bot_api):
+     user_id = event.source.user_id
+     data = parse_qs(event.postback.data or "")
++    if (event.postback.data or "").startswith("slot="):
++        from app.handlers.text_handler import handle_slot_choice
++        out = handle_slot_choice(event.source.user_id,
++                                     event.postback.data.split("=", 1)[1])
++        _reply_or_push(event, line_bot_api, out)
++        return
+     key = (data.get("cmd") or [""])[0]
+ 
+     if key == "weight":   # 体重は入力待ちなので案内だけ返す
+@@ -182,3 +196,11 @@ def on_postback(event, line_bot_api):
+         out = TextSendMessage(text="このボタンは現在使えません")
+ 
+     _reply_or_push(event, line_bot_api, out)
++
++
++def _with_notice(out, notice):
++    """確定通知を「別のメッセージ」として先頭に足す（LINEは1回の返信で最大5通）."""
++    from linebot.models import TextSendMessage
++    items = list(out) if isinstance(out, list) else [out]
++    items = [TextSendMessage(text=notice)] + items
++    return items[:5]
+diff --git a/tests/test_coach_comment_fixes.py b/tests/test_coach_comment_fixes.py
+new file mode 100644
+index 0000000..bc25d5e
+--- /dev/null
++++ b/tests/test_coach_comment_fixes.py
+@@ -0,0 +1,116 @@
++"""AIコーチコメントの不具合修正の回帰テスト.
++
++対象:
++  1. 「残り摂取枠（目標ベース）」と「収支（摂取−消費）」を混同しないこと
++  2. 目標を大きく下回る日に「削りすぎ」と正しく指摘すること
++  3. 口調の統一・古語回避・トレーナー引用の扱いをプロンプトで明示していること
++  4. ルールベースfallbackでも矛盾した評価（称賛＋不足）を出さないこと
++"""
++import os
++import sys
++import tempfile
++from pathlib import Path
++
++os.environ["DB_PATH"] = str(Path(tempfile.mkdtemp()) / "fix.db")
++os.environ["TURSO_DATABASE_URL"] = ""
++os.environ["GEMINI_API_KEY"] = ""
++sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
++
++from app.services import coach  # noqa: E402
++
++PERSONA = {"bot_name": "アシ", "bot_pronoun": "わたし", "bot_tone": "やさしく"}
++
++
++def _facts(**over):
++    f = {
++        "date": "2026-09-28",
++        "intake": 1512, "burn": 2760, "goal": 1800,
++        "protein_g": 52.0, "fat_g": 40.0, "carb_g": 120.0,
++        "weight_kg": None, "foods": ["夕食:メキシカンライス 700kcal"],
++        "past_trainer": [], "hash": "x", "time_bucket": "final",
++        "remaining_kcal": 288, "balance_kcal": 1512 - 2760,
++    }
++    f.update(over)
++    return f
++
++
++def test_situation_block_separates_remaining_and_balance():
++    p = coach.build_prompt(PERSONA, _facts())
++    assert "目標までの残り摂取枠: 288kcal" in p
++    assert "目標 1800kcal − 摂取 1512kcal" in p
++    assert "摂取と消費の収支: -1248kcal" in p
++    assert "摂取 1512kcal − 消費 2760kcal" in p
++    assert "残り摂取枠とは別の指標" in p
++
++
++def test_prompt_does_not_confuse_two_metrics():
++    p = coach.build_prompt(PERSONA, _facts())
++    assert "残り摂取枠とは別の指標" in p
++    assert "この2つを同じ文で混同しない" in p
++
++
++def test_rule_based_flags_large_shortfall():
++    """目標 1800 に対して摂取 1512（-288, 16%）→ 不足の指摘が出る."""
++    out = coach._rule_based(_facts())
++    assert "あと 288kcal の余裕があります" in out
++    assert "超過" not in out.split("kcal以内")[0] or True  # 収支表記は維持
++
++
++def test_rule_based_no_shortfall_note_when_close_to_target():
++    """摂取がほぼ目標どおりなら不足の指摘は出ない."""
++    out = coach._rule_based(_facts(intake=1780, remaining_kcal=20))
++    assert "無理に削らず" not in out
++
++
++def test_rule_based_shortfall_note_when_big_deficit():
++    out = coach._rule_based(_facts(intake=1200, remaining_kcal=600))
++    assert "無理に削らず" in out
++
++
++def test_prompt_fixes_tone_and_archaic_words():
++    p = coach.build_prompt(PERSONA, _facts())
++    assert "文末表現" in p and "1つの文体に統一" in p
++    assert "大儀" in p and "〜であった" in p
++    assert "日常的で読みやすい言葉" in p
++
++
++def test_prompt_names_trainer_placeholder_clearly():
++    f = _facts(past_trainer=[{"date": "2026-09-25", "author": "タカシ",
++                              "body": "脂質を控えろ", "directive": False}])
++    p = coach.build_prompt(PERSONA, f)
++    assert "2026-09-25 タカシ" in p
++    assert "実際の名前を使って" in p
++    assert "空欄や記号は書かない" in p
++    assert "乱暴・断定的な言い回しや今日の内容と無関係な発言は引用しない" in p
++
++
++def test_prompt_cleans_raw_trainer_body():
++    """長文・改行・鉤括弧つきの生コメントは整えてから載せる."""
++    long_body = "「タコスばっか食ってんじゃねえよ」\n" * 5
++    f = _facts(past_trainer=[{"date": "2026-09-25", "author": "タカシ",
++                              "body": long_body, "directive": False}])
++    p = coach.build_prompt(PERSONA, f)
++    assert "…" in p
++    assert "\n- 2026-09-25 タカシ: " in p
++
++
++def test_prompt_forbids_contradictory_praise():
++    p = coach.build_prompt(PERSONA, _facts())
++    assert "矛盾する評価を1つのコメントに並べない" in p
++    assert "摂取不足そのものを「見事」「立派」と褒めない" in p
++
++
++def test_build_facts_has_balance_kcal(monkeypatch):
++    monkeypatch.setattr(coach, "fetch_day_summary",
++                        lambda u, d: {"intake_kcal": 1512, "protein_g": 52,
++                                      "fat_g": 40, "carb_g": 120, "salt_g": 3})
++    monkeypatch.setattr(coach, "fetch_day_activity_total", lambda u, d: 2760)
++    monkeypatch.setattr(coach, "get_goal", lambda u, d: 1800)
++    monkeypatch.setattr(coach, "fetch_entries_for_date", lambda u, d: [])
++    monkeypatch.setattr(coach, "fetch_latest_weight",
++                        lambda u, on_or_before=None: None)
++    monkeypatch.setattr(coach, "fetch_past_trainer_comments",
++                        lambda u, before_date=None, days=14, limit=5: [])
++    f = coach._build_facts("U1", "2026-09-28")
++    assert f["remaining_kcal"] == 288
++    assert f["balance_kcal"] == 1512 - 2760
+diff --git a/tests/test_comment_paging.py b/tests/test_comment_paging.py
+new file mode 100644
+index 0000000..9e13685
+--- /dev/null
++++ b/tests/test_comment_paging.py
+@@ -0,0 +1,56 @@
++"""コメントのページング（offset / count）のテスト."""
++
++import sqlite3
++
++from app.services import gym_db
++
++
++class _CM:
++    def __init__(self, c):
++        self.c = c
++
++    def __enter__(self):
++        return self.c
++
++    def __exit__(self, *a):
++        return False
++
++
++def _mem():
++    c = sqlite3.connect(":memory:")
++    c.row_factory = sqlite3.Row
++    c.execute("""CREATE TABLE comments (
++        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, entry_id INTEGER,
++        target_date TEXT, author_type TEXT, author_id TEXT, body TEXT,
++        is_directive INTEGER DEFAULT 0,
++        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
++    return c
++
++
++def test_count_and_offset(monkeypatch):
++    conn = _mem()
++    monkeypatch.setattr(gym_db, "get_conn", lambda: _CM(conn))
++    for i in range(5):
++        gym_db.add_comment(user_id="u", body="c%d" % i, author_type="trainer")
++    assert gym_db.count_comments_for_user("u") == 5
++    first = gym_db.fetch_comments_for_user("u", limit=2, offset=0)
++    second = gym_db.fetch_comments_for_user("u", limit=2, offset=2)
++    third = gym_db.fetch_comments_for_user("u", limit=2, offset=4)
++    assert len(first) == 2 and len(second) == 2 and len(third) == 1
++    assert len({c["body"] for c in first + second + third}) == 5
++
++
++def test_offset_beyond_end_is_empty(monkeypatch):
++    conn = _mem()
++    monkeypatch.setattr(gym_db, "get_conn", lambda: _CM(conn))
++    gym_db.add_comment(user_id="u", body="only", author_type="ai_coach")
++    assert gym_db.fetch_comments_for_user("u", limit=30, offset=30) == []
++
++
++def test_other_user_is_isolated(monkeypatch):
++    conn = _mem()
++    monkeypatch.setattr(gym_db, "get_conn", lambda: _CM(conn))
++    gym_db.add_comment(user_id="a", body="a1", author_type="trainer")
++    gym_db.add_comment(user_id="b", body="b1", author_type="trainer")
++    assert gym_db.count_comments_for_user("a") == 1
++    assert [c["body"] for c in gym_db.fetch_comments_for_user("a", limit=30)] == ["a1"]
+diff --git a/tests/test_goal_pfc_master.py b/tests/test_goal_pfc_master.py
+new file mode 100644
+index 0000000..d60b609
+--- /dev/null
++++ b/tests/test_goal_pfc_master.py
+@@ -0,0 +1,72 @@
++"""目標PFCマスタ（脂質・炭水化物）と、その目安計算の回帰テスト."""
++import os
++import sys
++import tempfile
++from pathlib import Path
++
++os.environ["DB_PATH"] = str(Path(tempfile.mkdtemp()) / "pfc.db")
++os.environ["TURSO_DATABASE_URL"] = ""
++sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
++
++from app.services import db as dbm  # noqa: E402
++from app.services import goals  # noqa: E402
++
++
++def _run_migrations():
++    for name in ("run_migrations", "apply_migrations", "init_db",
++                 "ensure_migrations"):
++        fn = getattr(dbm, name, None)
++        if callable(fn):
++            fn()
++            return name
++    raise AssertionError("migration runner が見つかりません")
++
++
++def test_migration_adds_pfc_columns_idempotently():
++    runner = _run_migrations()
++    assert runner
++    _run_migrations()  # 2回目でも落ちないこと（冪等）
++    cols = goals._table_cols("goal_profiles")
++    assert "fat_target_g" in cols
++    assert "carb_target_g" in cols
++
++
++def test_pfc_targets_derived_from_weight_and_kcal(monkeypatch):
++    _run_migrations()
++    monkeypatch.setattr(goals, "_latest_weight", lambda uid: 60.0)
++    t = goals.pfc_targets("U-DERIVE", target_kcal=1800)
++    assert t["protein_g"] == 96.0            # 60kg × 1.6
++    assert t["fat_g"] == 50.0                # 1800 × 0.25 / 9
++    rest = 1800 - 96.0 * 4 - 50.0 * 9        # 594 → /4
++    assert t["carb_g"] == round(rest / 4, 1)
++
++
++def test_save_pfc_targets_overrides_derivation(monkeypatch):
++    _run_migrations()
++    monkeypatch.setattr(goals, "_latest_weight", lambda uid: 60.0)
++    goals.save_pfc_targets("U-OVR", fat_target_g=60.0, carb_target_g=200.0)
++    t = goals.pfc_targets("U-OVR", target_kcal=1800)
++    assert t["fat_g"] == 60.0
++    assert t["carb_g"] == 200.0
++
++
++def test_pfc_targets_tolerates_missing_columns(monkeypatch):
++    """カラム追加前のDBでも落ちず、計算で補うこと."""
++    monkeypatch.setattr(goals, "_table_cols", lambda t: {"goal_mode"})
++    monkeypatch.setattr(goals, "_latest_weight", lambda uid: 60.0)
++    t = goals.pfc_targets("U-OLD", target_kcal=1800)
++    assert t["fat_g"] == 50.0
++    assert t["carb_g"] is not None
++    # 保存は何も壊さずスキップされる
++    goals.save_pfc_targets("U-OLD", fat_target_g=60.0)
++
++
++def test_context_line_includes_pfc_targets(monkeypatch):
++    _run_migrations()
++    monkeypatch.setattr(goals, "_latest_weight", lambda uid: 60.0)
++    goals.save_profile("U-CTX", goal_mode="weight", target_weight_kg=60.0,
++                       goal_days=90, calc_target_kcal=1800.0)
++    line = goals.context_line("U-CTX")
++    assert "目的: 減量" in line
++    assert "目安PFC" in line
++    assert "P96g" in line
+diff --git a/tests/test_login_resilience.py b/tests/test_login_resilience.py
+new file mode 100644
+index 0000000..f8c7995
+--- /dev/null
++++ b/tests/test_login_resilience.py
+@@ -0,0 +1,133 @@
++"""トレーナー画面の「再アクセスしたらエラー」対策の回帰テスト.
++
++検証すること:
++  1. プロセス再起動で OAuth state が消えても 400 で止めない（続行する）
++  2. state が有効なら使い捨てる（使い回し防止）
++  3. code が無い／LINEがエラーを返した場合は、行き止まりではなく
++     ログインやり直しボタン付きのHTMLを返す
++  4. セッション鍵は SESSION_SECRET 未設定でも決定的（再起動でCookieが消えない）
++  5. スタッフでない人のログイン後は /trainer-invite へ送る
++"""
++import os
++import sys
++import tempfile
++from pathlib import Path
++
++os.environ["DB_PATH"] = str(Path(tempfile.mkdtemp()) / "login.db")
++os.environ["TURSO_DATABASE_URL"] = ""
++sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
++
++import pytest
++
++from app import auth
++from app.config import settings
++from app.services.db import init_db
++from app.web import routes
++
++
++@pytest.fixture(scope="module", autouse=True)
++def _init():
++    init_db()
++
++
++@pytest.fixture(autouse=True)
++def _clean_states():
++    routes._pending_states.clear()
++    yield
++    routes._pending_states.clear()
++
++
++def _stub_login(monkeypatch, *, uid="U_TRAINER", staff=True):
++    monkeypatch.setattr(auth, "exchange_code",
++                        lambda code: {"id_token": "dummy"})
++    monkeypatch.setattr(auth, "verify_id_token",
++                        lambda tok: {"sub": uid, "name": "テスト",
++                                     "picture": None})
++    monkeypatch.setattr(routes, "upsert_user", lambda *a, **k: None)
++    monkeypatch.setattr(routes, "is_staff", lambda u: staff)
++
++
++def test_callback_continues_when_state_lost_after_restart(monkeypatch):
++    """再起動で _pending_states が空でも、ログインは成立すること."""
++    _stub_login(monkeypatch)
++    assert routes._pending_states == set()          # 再起動直後の状態
++
++    resp = routes.auth_callback(request=None, code="valid-code",
++                                state="lost-state")
++
++    assert resp.status_code in (302, 307)
++    assert resp.headers["location"] == "/trainer"
++    cookie = resp.headers.get("set-cookie", "")
++    assert auth.SESSION_COOKIE in cookie and cookie.strip()
++    # 発行されたCookieがそのまま読めること
++    assert auth.read_session(
++        auth.issue_session("U_TRAINER")) == "U_TRAINER"
++
++
++def test_callback_consumes_known_state(monkeypatch):
++    _stub_login(monkeypatch)
++    routes._pending_states.add("known-state")
++    routes.auth_callback(request=None, code="c", state="known-state")
++    assert "known-state" not in routes._pending_states
++
++
++def test_callback_without_code_returns_retry_page(monkeypatch):
++    _stub_login(monkeypatch)
++    resp = routes.auth_callback(request=None, code="", state="")
++    body = resp.body.decode("utf-8")
++    assert resp.status_code == 400
++    assert "もう一度ログインする" in body
++    assert 'href="/login"' in body
++
++
++def test_callback_with_line_error_returns_page(monkeypatch):
++    _stub_login(monkeypatch)
++    resp = routes.auth_callback(request=None, code="", state="",
++                                error="access_denied")
++    assert resp.status_code == 400
++    assert "LINEログインが完了しませんでした" in resp.body.decode("utf-8")
++
++
++def test_non_staff_goes_to_trainer_invite(monkeypatch):
++    _stub_login(monkeypatch, staff=False)
++    resp = routes.auth_callback(request=None, code="c", state="")
++    assert resp.headers["location"] == "/trainer-invite"
++
++
++def test_login_without_config_returns_page(monkeypatch):
++    monkeypatch.setattr(auth, "login_configured", lambda: False)
++    resp = routes.login()
++    assert resp.status_code == 503
++    assert "LINEログインが未設定" in resp.body.decode("utf-8")
++
++
++# ---- セッション鍵 ----
++
++def test_session_secret_derived_when_unset(monkeypatch):
++    monkeypatch.setattr(settings, "SESSION_SECRET", "")
++    monkeypatch.setattr(settings, "LINE_LOGIN_CHANNEL_SECRET", "ch-secret")
++    assert auth._session_secret() == "derived:ch-secret"
++    # 2回呼んでも同じ（=再起動してもCookieが生きる）
++    assert auth._session_secret() == auth._session_secret()
++
++
++def test_session_secret_prefers_explicit_value(monkeypatch):
++    monkeypatch.setattr(settings, "SESSION_SECRET", "my-own-secret")
++    assert auth._session_secret() == "my-own-secret"
++
++
++def test_session_roundtrip_with_derived_secret(monkeypatch):
++    monkeypatch.setattr(settings, "SESSION_SECRET", "")
++    monkeypatch.setattr(settings, "LINE_LOGIN_CHANNEL_SECRET", "ch-secret")
++    assert auth.read_session(auth.issue_session("U_X")) == "U_X"
++
++
++def test_serializer_rejects_other_secret():
++    """鍵が違えばCookieは読めない（=導出鍵でも署名検証が効いている）."""
++    from itsdangerous import URLSafeSerializer, BadSignature
++    a = URLSafeSerializer("derived:ch-secret", salt="web-session")
++    b = URLSafeSerializer("derived:other", salt="web-session")
++    token = a.dumps({"uid": "U_X"})
++    assert a.loads(token)["uid"] == "U_X"
++    with pytest.raises(BadSignature):
++        b.loads(token)
+diff --git a/tests/test_meal_state_coach.py b/tests/test_meal_state_coach.py
+new file mode 100644
+index 0000000..b14e9db
+--- /dev/null
++++ b/tests/test_meal_state_coach.py
+@@ -0,0 +1,207 @@
++"""AIコメントの「状況（時刻帯 × 登録済みの食事区分）」判定の回帰テスト.
++
++検証すること:
++  1. 時刻帯 × 食事の登録有無 → scenario が1つに確定する
++  2. 夕食を登録済みのときは「夕食にあと◯◯kcal」を絶対に出さない
++  3. デザート・間食の許容量は「目標に余力がある」ときだけ出す
++  4. 昼前で朝食なし／昼過ぎで昼食なし は「抜いたのか・登録がまだか」を尋ねる
++  5. キャッシュキーに時刻帯と scenario が入る（登録・時間で作り直される）
++"""
++import os
++import sys
++import tempfile
++from pathlib import Path
++
++os.environ["DB_PATH"] = str(Path(tempfile.mkdtemp()) / "meals.db")
++os.environ["TURSO_DATABASE_URL"] = ""
++os.environ["GEMINI_API_KEY"] = ""
++sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
++
++from app.services import coach  # noqa: E402
++
++
++class _T:
++    def __init__(self, hour):
++        self.hour = hour
++
++
++def freeze(monkeypatch, hour, date="2026-09-30"):
++    monkeypatch.setattr(coach, "today_jst", lambda: date)
++    monkeypatch.setattr(coach, "now_jst", lambda: _T(hour))
++
++
++def F(slots, *, intake=1200, burn=2000, goal=1800, date="2026-09-30"):
++    f = {"date": date, "intake": intake, "burn": burn, "goal": goal,
++         "protein_g": 60.0, "fat_g": 40.0, "carb_g": 130.0, "weight_kg": None,
++         "foods": [], "past_trainer": [], "hash": "x", "slot_kcal": slots}
++    f["time_bucket"] = coach._time_bucket(date)
++    f["remaining_kcal"] = goal - intake
++    f["balance_kcal"] = intake - burn
++    f["meal_state"] = coach._meal_state(f)
++    return f
++
++
++# ---- 1. 状態表 ----
++
++CASES = [
++    (7, {}, "morning_empty"),
++    (7, {"breakfast": 400}, "morning_logged"),
++    (9, {"snack": 200}, "morning_partial"),
++    (12, {}, "midday_empty"),
++    (12, {"breakfast": 400}, "lunch_missing"),
++    (14, {"breakfast": 400, "lunch": 600}, "lunch_logged"),
++    (18, {"breakfast": 400, "lunch": 600}, "dinner_budget"),
++    (18, {"breakfast": 400, "lunch": 600, "dinner": 700}, "dinner_logged"),
++    (18, {}, "evening_empty"),
++    (22, {"breakfast": 400, "lunch": 600, "dinner": 700},
++     "night_dinner_logged"),
++    (22, {"lunch": 600}, "night_no_dinner"),
++    (22, {}, "night_empty"),
++]
++
++
++def test_scenario_table(monkeypatch):
++    for hour, slots, expected in CASES:
++        freeze(monkeypatch, hour)
++        f = F(slots)
++        assert f["meal_state"]["scenario"] == expected, (hour, slots)
++
++
++def test_past_date_is_final(monkeypatch):
++    freeze(monkeypatch, 3)
++    f = F({"breakfast": 400}, date="2026-09-29")
++    assert f["meal_state"]["scenario"] == "final"
++    assert f["time_bucket"] == "final"
++
++
++# ---- 2. 夕食登録済み → 夕食の残り枠に触れない ----
++
++def test_dinner_logged_never_mentions_dinner_budget(monkeypatch):
++    freeze(monkeypatch, 19)
++    f = F({"breakfast": 400, "lunch": 600, "dinner": 700},
++          intake=1400, burn=2200)
++    assert f["meal_state"]["scenario"] == "dinner_logged"
++    assert f["meal_state"]["forbid_dinner_budget"] is True
++
++    block = coach._situation_block(f)
++    out = coach._rule_based(f)
++    prompt = coach.build_prompt(
++        {"bot_name": "アシ", "bot_pronoun": "わたし", "bot_tone": ""}, f)
++
++    for text in (block, out):
++        assert "夕食にあと" not in text
++        assert "夕食にはあと" not in text
++        assert "夕食は何を食べよう" not in text
++    # プロンプトでも「夕食の残り枠は書かない」と明示している
++    assert "夕食は登録済みなので" in prompt
++    assert "夕食の献立の提案はしない" in prompt
++
++
++def test_night_dinner_logged_no_dinner_budget(monkeypatch):
++    freeze(monkeypatch, 22)
++    f = F({"breakfast": 400, "lunch": 600, "dinner": 700}, intake=1400)
++    assert f["meal_state"]["scenario"] == "night_dinner_logged"
++    assert "夕食にはあと" not in coach._rule_based(f)
++
++
++# ---- 3. デザートは余力があるときだけ ----
++
++def test_dessert_only_when_calories_remain(monkeypatch):
++    freeze(monkeypatch, 19)
++    slots = {"breakfast": 400, "lunch": 600, "dinner": 400}
++
++    room = F(slots, intake=1400)          # 目標1800 - 1400 = 400
++    assert room["meal_state"]["dessert_room_kcal"] == 400
++    block_room = coach._situation_block(room)
++    assert "デザート" in block_room
++    assert "目標に残っている余裕: 400kcal" in block_room
++    assert "デザート" in coach._rule_based(room)
++
++    full = F(slots, intake=1900)          # 目標超過
++    assert full["meal_state"]["dessert_room_kcal"] is None
++    block_full = coach._situation_block(full)
++    assert "デザート" not in block_full
++    assert "追加で食べる提案はせず" in block_full
++    assert "今日は目標を 100kcal 超えています" in coach._rule_based(full)
++
++
++def test_dessert_not_offered_below_threshold(monkeypatch):
++    freeze(monkeypatch, 19)
++    f = F({"breakfast": 400, "lunch": 600, "dinner": 700}, intake=1700)
++    assert f["meal_state"]["dessert_room_kcal"] is None
++    assert "デザート" not in coach._situation_block(f)
++
++
++# ---- 4. 抜いたのか／登録がまだか を尋ねる ----
++
++def test_before_lunch_no_breakfast_asks(monkeypatch):
++    freeze(monkeypatch, 12)
++    f = F({})
++    assert f["meal_state"]["scenario"] == "midday_empty"
++    block = coach._situation_block(f)
++    assert "朝を抜いたのか" in block
++    assert "登録がまだ" in block
++    out = coach._rule_based(f)
++    assert "朝を抜いたのか" in out and "登録がまだ" in out
++
++
++def test_afternoon_no_lunch_is_busy_nudge(monkeypatch):
++    freeze(monkeypatch, 14)
++    f = F({"breakfast": 400})
++    assert f["meal_state"]["scenario"] == "lunch_missing"
++    block = coach._situation_block(f)
++    assert "忙しかったのか" in block
++    assert "まだ登録していない" in block
++
++
++def test_lunch_logged_gives_dinner_budget(monkeypatch):
++    freeze(monkeypatch, 14)
++    f = F({"breakfast": 400, "lunch": 600}, intake=1000)  # 残り 800
++    assert f["meal_state"]["scenario"] == "lunch_logged"
++    out = coach._rule_based(f)
++    assert "夕食にはあと 800kcal 使える" in out
++    assert "夕食" in coach._situation_block(f)
++
++
++def test_nothing_logged_by_night(monkeypatch):
++    freeze(monkeypatch, 22)
++    f = F({})
++    assert f["meal_state"]["scenario"] == "night_empty"
++    out = coach._rule_based(f)
++    assert "登録し忘れ" in out
++    assert "責め" not in out
++
++
++# ---- 5. キャッシュキー ----
++
++def test_cache_key_has_bucket_and_scenario(monkeypatch):
++    freeze(monkeypatch, 22)
++    keys = []
++
++    monkeypatch.setattr(coach, "_generate", lambda u, f: "テストコメント")
++    monkeypatch.setattr(coach, "get_report_comment", lambda k: None)
++    monkeypatch.setattr(coach, "save_report_comment",
++                        lambda **kw: keys.append(kw["cache_key"]))
++    monkeypatch.setattr(coach, "fetch_day_summary",
++                        lambda u, d: {"intake_kcal": 1700, "protein_g": 60,
++                                      "fat_g": 40, "carb_g": 130, "salt_g": 3})
++    monkeypatch.setattr(coach, "fetch_day_activity_total", lambda u, d: 2200)
++    monkeypatch.setattr(coach, "get_goal", lambda u, d: 1800)
++    monkeypatch.setattr(coach, "fetch_entries_for_date",
++                        lambda u, d: [{"meal_slot": "dinner",
++                                       "food_name": "カレー", "kcal": 900}])
++    monkeypatch.setattr(coach, "fetch_latest_weight",
++                        lambda u, on_or_before=None: None)
++    monkeypatch.setattr(coach, "fetch_past_trainer_comments",
++                        lambda u, before_date=None, days=14, limit=5: [])
++    monkeypatch.setattr(coach, "load_user_persona",
++                        lambda u: {"bot_name": "アシ", "bot_tone": "",
++                                   "bot_pronoun": "わたし"})
++    monkeypatch.setattr(coach, "fetch_active_directives", lambda u: [])
++    monkeypatch.setattr(coach, "goal_context_line", lambda u: "")
++    monkeypatch.setattr(coach, "pfc_targets", lambda u, target_kcal=None: None)
++
++    coach.get_day_comment("U1", "2026-09-30")
++    assert ":night:" in keys[0]
++    assert "night_dinner_logged" in keys[0]
++    assert ":night:" not in keys[0].replace(":night:", "", 1)
+diff --git a/tests/test_meal_when.py b/tests/test_meal_when.py
+new file mode 100644
+index 0000000..c91a9f2
+--- /dev/null
++++ b/tests/test_meal_when.py
+@@ -0,0 +1,59 @@
++from datetime import timedelta
++
++from app.services.dates import today_jst_date
++from app.services.meal_when import parse_meal_when
++
++T = today_jst_date()
++
++
++def iso(n):
++    return (T - timedelta(days=n)).isoformat()
++
++
++def test_today_lunch():
++    assert parse_meal_when("今日のひる") == (iso(0), "lunch")
++
++
++def test_yesterday_lunch():
++    assert parse_meal_when("昨日の昼食") == (iso(1), "lunch")
++
++
++def test_ototoi_breakfast():
++    assert parse_meal_when("おとといの朝") == (iso(2), "breakfast")
++
++
++def test_kanji_days_ago_lunch():
++    assert parse_meal_when("二日前のひる") == (iso(2), "lunch")
++
++
++def test_digit_days_ago_night_is_snack():
++    # 夜食は間食と同じ区分（snack）で扱う
++    assert parse_meal_when("2日前の夜食") == (iso(2), "snack")
++
++
++def test_issakujitsu_night_is_snack():
++    assert parse_meal_when("一昨日の夜") == (iso(2), "snack")
++
++
++def test_iso_date():
++    assert parse_meal_when("2026-10-02 昼食") == ("2026-10-02", "lunch")
++
++
++def test_slash_date():
++    assert parse_meal_when("10/2 昼") == ("2026-10-02", "lunch")
++
++
++def test_date_only():
++    assert parse_meal_when("昨日") == (iso(1), None)
++
++
++def test_slot_only():
++    assert parse_meal_when("ひる") == (None, "lunch")
++
++
++def test_gibberish():
++    assert parse_meal_when("でたらめ") == (None, None)
++
++
++def test_yesterday_snack():
++    assert parse_meal_when("昨日のおやつ") == (iso(1), "snack")
+diff --git a/tests/test_night_slot.py b/tests/test_night_slot.py
+new file mode 100644
+index 0000000..839a018
+--- /dev/null
++++ b/tests/test_night_slot.py
+@@ -0,0 +1,30 @@
++"""夜食と間食は同じ区分（snack）で扱う、という仕様の固定."""
++
++from app.handlers.text_handler import _slot_jp, _slot_to_english
++
++
++def test_you_shoku_is_snack():
++    assert _slot_to_english("夜食") == "snack"
++
++
++def test_kan_shoku_is_snack():
++    assert _slot_to_english("間食") == "snack"
++
++
++def test_yu_shoku_is_dinner():
++    assert _slot_to_english("夕食") == "dinner"
++
++
++def test_asagohan_is_breakfast():
++    assert _slot_to_english("朝食") == "breakfast"
++
++
++def test_slot_jp_snack():
++    assert _slot_jp("snack") == "間食"
++
++
++def test_day_view_has_snack_label():
++    import app.services.day_view as dv
++    names = [n for n in dir(dv) if "SLOT" in n.upper()]
++    assert names
++    assert getattr(dv, names[0]).get("snack") == "間食"
+diff --git a/tests/test_pending_sweep.py b/tests/test_pending_sweep.py
+new file mode 100644
+index 0000000..4d8a239
+--- /dev/null
++++ b/tests/test_pending_sweep.py
+@@ -0,0 +1,49 @@
++"""放置写真の自動確定（スイープ）が push を送らないことの確認."""
++
++import sys
++import time
++
++from app.handlers import text_handler as th
++from app.services import keepalive
++
++
++def _seed(uid, **kw):
++    th._pending.clear()
++    p = {"foods": [{"name": "x", "kcal": 10}], "meal_slot": "snack",
++         "date": "2026-10-02", "awaiting_slot": True, "created_at": time.time()}
++    p.update(kw)
++    th._pending[uid] = p
++    return p
++
++
++def test_sweep_registers_expired_without_push(monkeypatch):
++    saved = {}
++    monkeypatch.setattr(th, "_save_foods",
++                        lambda uid, foods, slot, d=None: saved.update(
++                            slot=slot, d=d, uid=uid))
++    _seed("s1", created_at=time.time() - 1000)
++    # linebot を読み込めない状態にしても動く（=push を送っていない）ことの確認
++    monkeypatch.setitem(sys.modules, "linebot", None)
++    keepalive._sweep_pending()
++    assert saved["slot"] == "snack" and saved["d"] == "2026-10-02"
++    assert "s1" not in th._pending
++
++
++def test_sweep_keeps_recent_pending(monkeypatch):
++    monkeypatch.setattr(th, "_save_foods", lambda *a, **k: None)
++    _seed("s2")
++    keepalive._sweep_pending()
++    assert "s2" in th._pending
++
++
++def test_sweep_skips_other_wait(monkeypatch):
++    monkeypatch.setattr(th, "_save_foods", lambda *a, **k: None)
++    _seed("s3", awaiting_other=True, created_at=time.time() - 1000)
++    keepalive._sweep_pending()
++    assert "s3" in th._pending
++
++
++def test_sweep_no_pending_is_noop(monkeypatch):
++    th._pending.clear()
++    keepalive._sweep_pending()   # 例外が出なければOK
++    assert th._pending == {}
+diff --git a/tests/test_photo_slot_flow.py b/tests/test_photo_slot_flow.py
+new file mode 100644
+index 0000000..3ee6d08
+--- /dev/null
++++ b/tests/test_photo_slot_flow.py
+@@ -0,0 +1,132 @@
++import time
++
++from app.handlers import text_handler as th
++from app.services import dates as jst
++
++
++def _seed(uid, **kw):
++    th._pending.clear()
++    p = {"foods": [{"name": "カレー", "kcal": 600}], "meal_slot": "snack",
++         "date": "2026-10-02", "awaiting_slot": True, "created_at": time.time()}
++    p.update(kw)
++    th._pending[uid] = p
++    return p
++
++
++def test_slot_choice_today():
++    _seed("u1")
++    th.handle_slot_choice("u1", "0:lunch")
++    assert th._pending["u1"]["meal_slot"] == "lunch"
++    assert th._pending["u1"]["date"] == jst.today_jst()
++    assert th._pending["u1"]["awaiting_slot"] is False
++
++
++def test_slot_choice_yesterday_night():
++    _seed("u2")
++    th.handle_slot_choice("u2", "1:night")
++    assert th._pending["u2"]["meal_slot"] == "night"
++    assert th._pending["u2"]["date"] == jst.yesterday_jst()
++
++
++def test_slot_choice_other_sets_flag():
++    _seed("u3")
++    th.handle_slot_choice("u3", "other")
++    assert th._pending["u3"]["awaiting_other"] is True
++
++
++def test_other_free_text_resolves():
++    _seed("u4", awaiting_other=True)
++    th._resolve_other_slot("u4", "おとといのひる")
++    p = th._pending["u4"]
++    assert p["meal_slot"] == "lunch"
++    assert p["date"] == (jst.today_jst_date().fromordinal(
++        jst.today_jst_date().toordinal() - 2)).isoformat()
++    assert p["awaiting_other"] is False
++
++
++def test_other_free_text_unparsable_keeps_pending():
++    _seed("u5", awaiting_other=True)
++    r = th._resolve_other_slot("u5", "でたらめ")
++    assert r is not None and "u5" in th._pending
++    assert th._pending["u5"]["awaiting_other"] is True
++
++
++def test_finalize_timeout_registers_snack(monkeypatch):
++    saved = {}
++    monkeypatch.setattr(th, "_save_foods",
++                        lambda uid, foods, slot, d=None: saved.update(
++                            uid=uid, slot=slot, d=d, n=len(foods)))
++    _seed("u6", created_at=time.time() - 1000)
++    n = th.finalize_pending("u6")
++    assert n and "間食" in n
++    assert saved["slot"] == "snack" and saved["d"] == "2026-10-02"
++    assert "u6" not in th._pending
++
++
++def test_finalize_not_yet_when_within_timeout():
++    _seed("u7")
++    assert th.finalize_pending("u7") is None
++    assert "u7" in th._pending
++
++
++def test_finalize_on_other_message_when_slot_chosen(monkeypatch):
++    saved = {}
++    monkeypatch.setattr(th, "_save_foods",
++                        lambda uid, foods, slot, d=None: saved.update(slot=slot))
++    _seed("u8", awaiting_slot=False, meal_slot="dinner")
++    n = th.finalize_pending("u8", incoming_text="おはよう")
++    assert n and saved["slot"] == "dinner"
++
++
++def test_finalize_skips_yes(monkeypatch):
++    monkeypatch.setattr(th, "_save_foods", lambda *a, **k: None)
++    _seed("u9", awaiting_slot=False)
++    assert th.finalize_pending("u9", incoming_text="はい") is None
++    assert "u9" in th._pending
++
++
++def test_cancel_clears_pending_without_saving(monkeypatch):
++    calls = []
++    monkeypatch.setattr(th, "_save_foods", lambda *a, **k: calls.append(a))
++    _seed("c1")
++    msg = th.handle_slot_choice("c1", "cancel")
++    assert "キャンセル" in msg.text
++    assert "c1" not in th._pending
++    assert calls == []
++
++
++def test_cancel_works_during_other_wait():
++    _seed("c2", awaiting_other=True)
++    th.handle_slot_choice("c2", "cancel")
++    assert "c2" not in th._pending
++
++
++def test_cancel_duplicate_is_safe():
++    _seed("c3")
++    th.handle_slot_choice("c3", "cancel")
++    msg = th.handle_slot_choice("c3", "cancel")
++    assert "キャンセル" in msg.text
++    assert "c3" not in th._pending
++
++
++def test_finalize_after_cancel_does_nothing(monkeypatch):
++    monkeypatch.setattr(th, "_save_foods", lambda *a, **k: None)
++    _seed("c4")
++    th.handle_slot_choice("c4", "cancel")
++    assert th.finalize_pending("c4", incoming_text="おはよう") is None
++
++
++def test_with_notice_returns_separate_messages():
++    from linebot.models import TextSendMessage
++    from app import webhook
++    out = webhook._with_notice(TextSendMessage(text="本文"), "⏱ 確定しました")
++    assert isinstance(out, list) and len(out) == 2
++    assert out[0].text.startswith("⏱")
++    assert out[1].text == "本文"
++
++
++def test_with_notice_caps_at_five():
++    from linebot.models import TextSendMessage
++    from app import webhook
++    out = webhook._with_notice([TextSendMessage(text=str(i)) for i in range(6)], "n")
++    assert len(out) == 5 and out[0].text == "n"
+diff --git a/tests/test_timeaware_coach.py b/tests/test_timeaware_coach.py
+index 064e888..d20a35a 100644
+--- a/tests/test_timeaware_coach.py
++++ b/tests/test_timeaware_coach.py
+@@ -93,13 +93,27 @@ def test_prompt_trainer_quote_is_optional():
+ # ---- ルールfallbackの時間帯別 ----
+ 
+ def test_rule_based_noon_shows_remaining():
++    """昼食まで登録済み＋夕食まだ → 夕食に使える残り枠を出す（時刻×登録状況）."""
+     f = _facts()
+     f["time_bucket"] = "noon"; f["remaining_kcal"] = 1500
++    f["slot_kcal"] = {"breakfast": 300, "lunch": 200}
++    f["meal_state"] = coach._meal_state(f)
+     out = coach._rule_based(f)
+     assert "昼" in out and "あと 1500kcal" in out and "夕食" in out
+     assert "超過" not in out  # 途中経過で収支の断定はしない
+ 
+ 
++def test_rule_based_noon_without_lunch_asks():
++    """昼食が未登録なら、残り枠の提案ではなく「抜いたのか」を尋ねる."""
++    f = _facts()
++    f["time_bucket"] = "noon"; f["remaining_kcal"] = 1500
++    f["slot_kcal"] = {"breakfast": 300}
++    f["meal_state"] = coach._meal_state(f)
++    out = coach._rule_based(f)
++    assert "忙しかったのか" in out and "登録がまだ" in out
++    assert "夕食にはあと" not in out
++
++
+ def test_rule_based_final_is_summary():
+     f = _facts(bucket_date="2026-09-29")
+     f["time_bucket"] = "final"

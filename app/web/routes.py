@@ -6,6 +6,7 @@ Phase 1 のスコープ:
   - /api/me                          … 動作確認用（ログイン中ユーザーの状態）
 画面（トレーナーダッシュボード等）は Phase 2 で追加する。
 """
+import html
 import logging
 
 from fastapi import APIRouter, HTTPException, Request
@@ -30,6 +31,27 @@ templates = Jinja2Templates(
 # OAuth state の簡易保持（無料枠=単一プロセス前提。再起動で消えるが許容）
 _pending_states: set = set()
 
+# トレーナー画面が返すエラーを、行き止まりではなく「やり直せる」画面にする
+_ERROR_HTML = """<!doctype html><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<div style="font-family:system-ui,sans-serif;padding:24px;line-height:1.8">
+  <h2 style="margin:0 0 8px">{title}</h2>
+  <p>{detail}</p>
+  <p><a href="/login" style="display:inline-block;padding:10px 18px;
+     background:#06c755;color:#fff;border-radius:8px;text-decoration:none">
+     もう一度ログインする</a></p>
+  <p style="color:#888;font-size:12px">{hint}</p>
+</div>"""
+
+
+def _error_page(title: str, detail: str, status_code: int = 400,
+                hint: str = "何度も失敗するときは、LINEのトークから開き直してください。"):
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse(
+        _ERROR_HTML.format(title=html.escape(title), detail=html.escape(detail),
+                           hint=html.escape(hint)),
+        status_code=status_code)
+
 
 @router.get("/")
 def index(request: Request):
@@ -43,30 +65,50 @@ def index(request: Request):
 @router.get("/login")
 def login():
     if not auth.login_configured():
-        raise HTTPException(status_code=503,
-                            detail="LINEログインが未設定です")
+        return _error_page("LINEログインが未設定です",
+                           "サーバー側の設定（チャネルID/シークレット）が"
+                           "入っていません。管理者に連絡してください。", 503)
     state = auth.new_state()
     _pending_states.add(state)
     return RedirectResponse(auth.build_login_url(state))
 
 
 @router.get("/auth/callback")
-def auth_callback(code: str = "", state: str = "",
+def auth_callback(request: Request, code: str = "", state: str = "",
                   error: str = "", error_description: str = ""):
+    """LINEログインの戻り先.
+
+    state はCSRF対策で保持しているが、Render無料枠ではスリープ/再起動で
+    _pending_states が消える。そこで 400 で止めると「再アクセスしたら
+    エラー画面」になって詰むため、state が無い場合は警告を残して続行する
+    （code 自体が無効なら LINE 側の検証で失敗するので安全側は保たれる）。
+    """
     if error:
-        raise HTTPException(status_code=400,
-                            detail=f"LINEログインがキャンセルされました: {error}")
-    if state not in _pending_states:
-        raise HTTPException(status_code=400, detail="state が不正です。やり直してください")
-    _pending_states.discard(state)
+        return _error_page(
+            "LINEログインが完了しませんでした",
+            f"理由: {error}（{error_description or '詳細なし'}）"
+            if error_description else f"理由: {error}")
+    if not code:
+        return _error_page(
+            "ログイン情報が届きませんでした",
+            "ブラウザの戻る操作などで途中のURLを開いた可能性があります。",
+            400, hint="下のボタンから最初からログインし直してください。")
+
+    if state and state in _pending_states:
+        _pending_states.discard(state)
+    else:
+        logger.warning("auth state not found (process restarted?): state=%r "
+                       "pending=%d", state, len(_pending_states))
 
     tokens = auth.exchange_code(code)
     claims = auth.verify_id_token(tokens["id_token"])
     uid = claims["sub"]
     upsert_user(uid, claims.get("name"), claims.get("picture"))
 
-    # ロールで遷移先を振り分け（スタッフ→管理画面、会員→Phase 3 までは状態表示）
-    dest = "/trainer" if is_staff(uid) else "/api/me"
+    # ロールで遷移先を振り分け。
+    # スタッフ→管理画面。スタッフでない人は /trainer で403になるより、
+    # 招待コード入力（/trainer-invite）へ送るほうが次の一手が分かりやすい。
+    dest = "/trainer" if is_staff(uid) else "/trainer-invite"
     resp = RedirectResponse(dest)
     resp.set_cookie(auth.SESSION_COOKIE, auth.issue_session(uid),
                     httponly=True, samesite="lax", secure=True,

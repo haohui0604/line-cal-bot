@@ -157,9 +157,17 @@ def on_message(event, line_bot_api):
             elif m:
                 out = _handle_join_code(user_id, m.group(1).upper(), line_bot_api)
             else:
+                from app.handlers.text_handler import finalize_pending
+                _notice = finalize_pending(user_id, incoming_text=text)
                 out = handle_text(user_id, text)
+                if _notice:
+                    out = _with_notice(out, _notice)
     elif isinstance(event.message, ImageMessage):
+        from app.handlers.text_handler import finalize_pending
+        _notice = finalize_pending(user_id)
         out = handle_image(user_id, event.message.id, line_bot_api)
+        if _notice:
+            out = _with_notice(out, _notice)
     else:
         return
     if out is None:
@@ -170,6 +178,12 @@ def on_message(event, line_bot_api):
 def on_postback(event, line_bot_api):
     user_id = event.source.user_id
     data = parse_qs(event.postback.data or "")
+    if (event.postback.data or "").startswith("slot="):
+        from app.handlers.text_handler import handle_slot_choice
+        out = handle_slot_choice(event.source.user_id,
+                                     event.postback.data.split("=", 1)[1])
+        _reply_or_push(event, line_bot_api, out)
+        return
     key = (data.get("cmd") or [""])[0]
 
     if key == "weight":   # 体重は入力待ちなので案内だけ返す
@@ -182,3 +196,11 @@ def on_postback(event, line_bot_api):
         out = TextSendMessage(text="このボタンは現在使えません")
 
     _reply_or_push(event, line_bot_api, out)
+
+
+def _with_notice(out, notice):
+    """確定通知を「別のメッセージ」として先頭に足す（LINEは1回の返信で最大5通）."""
+    from linebot.models import TextSendMessage
+    items = list(out) if isinstance(out, list) else [out]
+    items = [TextSendMessage(text=notice)] + items
+    return items[:5]
