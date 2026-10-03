@@ -606,3 +606,147 @@ def count_my_member_comments(trainer_id: str) -> int:
              WHERE cm.author_type='member'
         """, (trainer_id,)).fetchone()
     return int(r["n"]) if r else 0
+
+
+# ================= Phase 6: 質問スレッド・未確認管理・ジム設定 =================
+
+def _ensure_reply_support(c) -> None:
+    """comments.reply_to_id / notified_at を冪等に用意する."""
+    cols = {r[1] for r in c.execute("PRAGMA table_info(comments)").fetchall()}
+    if "reply_to_id" not in cols:
+        c.execute("ALTER TABLE comments ADD COLUMN reply_to_id INTEGER")
+    if "notified_at" not in cols:
+        c.execute("ALTER TABLE comments ADD COLUMN notified_at TEXT")
+
+
+def add_reply(*, member_id: str, trainer_id: str, body: str,
+              reply_to_id: Optional[int] = None,
+              target_date: Optional[str] = None,
+              is_directive: bool = False) -> int:
+    """トレーナー→会員の返信を保存し、会員の未確認コメントを確認済みにする.
+
+    notified_at は「スタッフが確認した時刻」。NULL は未確認を表す。
+    """
+    with get_conn() as c:
+        _ensure_reply_support(c)
+        cur = c.execute(
+            "INSERT INTO comments (user_id, target_date, author_type, author_id,"
+            " body, is_directive, reply_to_id) VALUES (?,?,?,?,?,?,?)",
+            (member_id, target_date, "trainer", trainer_id, body,
+             1 if is_directive else 0, reply_to_id))
+        cid = cur.lastrowid
+        if reply_to_id:
+            c.execute("UPDATE comments SET notified_at=CURRENT_TIMESTAMP"
+                      " WHERE id=? AND (notified_at IS NULL OR notified_at='')",
+                      (reply_to_id,))
+        else:
+            c.execute("UPDATE comments SET notified_at=CURRENT_TIMESTAMP"
+                      " WHERE user_id=? AND author_type='member'"
+                      "   AND (notified_at IS NULL OR notified_at='')", (member_id,))
+        return cid
+
+
+def _unread_clause() -> str:
+    return "(cm.notified_at IS NULL OR cm.notified_at='')"
+
+
+def list_unread_member_comments(trainer_id: str, limit: int = 50):
+    """自分が担当する会員からの未確認コメント（新しい順）."""
+    with get_conn() as c:
+        _ensure_reply_support(c)
+        rows = c.execute(f"""
+            SELECT cm.id, cm.user_id, cm.body, cm.created_at, cm.target_date,
+                   u.display_name AS member_name
+              FROM comments cm
+              JOIN memberships m ON m.user_id=cm.user_id AND m.role='member'
+               AND m.status='active' AND m.trainer_id=?
+              LEFT JOIN users u ON u.line_user_id=cm.user_id
+             WHERE cm.author_type='member' AND {_unread_clause()}
+             ORDER BY cm.created_at DESC, cm.id DESC LIMIT ?
+        """, (trainer_id, int(limit))).fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_unread_member_comments(trainer_id: str) -> int:
+    with get_conn() as c:
+        _ensure_reply_support(c)
+        r = c.execute(f"""
+            SELECT COUNT(*) AS n FROM comments cm
+              JOIN memberships m ON m.user_id=cm.user_id AND m.role='member'
+               AND m.status='active' AND m.trainer_id=?
+             WHERE cm.author_type='member' AND {_unread_clause()}
+        """, (trainer_id,)).fetchone()
+    return int(r["n"] if r else 0)
+
+
+def list_member_threads(trainer_id: str, limit: int = 20):
+    """担当会員ごとの最新コメント・未確認件数（未確認が多い順）."""
+    with get_conn() as c:
+        _ensure_reply_support(c)
+        rows = c.execute(f"""
+            SELECT cm.user_id,
+                   COALESCE(u.display_name, cm.user_id) AS member_name,
+                   MAX(cm.created_at) AS last_at,
+                   SUM(CASE WHEN cm.author_type='member' AND {_unread_clause()}
+                            THEN 1 ELSE 0 END) AS unread,
+                   COUNT(*) AS total
+              FROM comments cm
+              JOIN memberships m ON m.user_id=cm.user_id AND m.role='member'
+               AND m.status='active' AND m.trainer_id=?
+              LEFT JOIN users u ON u.line_user_id=cm.user_id
+             GROUP BY cm.user_id
+             ORDER BY unread DESC, last_at DESC LIMIT ?
+        """, (trainer_id, int(limit))).fetchall()
+    return [dict(r) for r in rows]
+
+
+def fetch_member_thread(trainer_id: str, member_id: str, limit: int = 50):
+    """自分が担当する会員とのやりとり（会員の質問＋自分の返信）を古い順で返す."""
+    with get_conn() as c:
+        _ensure_reply_support(c)
+        ok = c.execute(
+            "SELECT 1 FROM memberships WHERE user_id=? AND role='member'"
+            " AND status='active' AND trainer_id=?", (member_id, trainer_id)).fetchone()
+        if not ok:
+            return []
+        rows = c.execute("""
+            SELECT cm.id, cm.author_type, cm.author_id, cm.body, cm.created_at,
+                   cm.target_date, cm.reply_to_id, cm.is_directive, cm.notified_at,
+                   COALESCE(u.display_name, cm.author_id) AS author_name
+              FROM comments cm
+              LEFT JOIN users u ON u.line_user_id=cm.author_id
+             WHERE cm.user_id=? AND (cm.author_type='member' OR cm.author_id=?)
+             ORDER BY cm.created_at DESC, cm.id DESC LIMIT ?
+        """, (member_id, trainer_id, int(limit))).fetchall()
+    return [dict(r) for r in reversed(rows)]
+
+
+def mark_thread_read(trainer_id: str, member_id: str) -> int:
+    """スレッドを開いた時点で会員の未確認コメントを確認済みにする."""
+    with get_conn() as c:
+        _ensure_reply_support(c)
+        ok = c.execute(
+            "SELECT 1 FROM memberships WHERE user_id=? AND role='member'"
+            " AND status='active' AND trainer_id=?", (member_id, trainer_id)).fetchone()
+        if not ok:
+            return 0
+        cur = c.execute("UPDATE comments SET notified_at=CURRENT_TIMESTAMP"
+                        " WHERE user_id=? AND author_type='member'"
+                        "   AND (notified_at IS NULL OR notified_at='')", (member_id,))
+        return int(cur.rowcount or 0)
+
+
+def rename_gym(gym_id: int, name: str) -> bool:
+    with get_conn() as c:
+        cur = c.execute("UPDATE gyms SET name=? WHERE id=?", (name, gym_id))
+        return (cur.rowcount or 0) > 0
+
+
+def regenerate_join_code(gym_id: int) -> Optional[str]:
+    """入会コードを再発行する（古いコードは無効になる）."""
+    with get_conn() as c:
+        code = _unique_join_code(c)
+        cur = c.execute("UPDATE gyms SET join_code=? WHERE id=?", (code, gym_id))
+        if not (cur.rowcount or 0):
+            return None
+        return code

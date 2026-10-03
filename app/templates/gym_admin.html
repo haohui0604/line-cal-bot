@@ -23,7 +23,7 @@
  .tabs a.on{background:#1b1d21;color:#fff;border-color:#1b1d21}
  .del{color:#b0b4bb}
 </style></head><body>
-<header><b>ジム管理</b><span class="mut">{{ me }}</span></header>
+<header><b>ジム管理</b><span class="row"><a href="/trainer/questions" style="color:#c9ccd1;text-decoration:none;font-size:13px">質問{% if unread %} <span style="background:#e5484d;color:#fff;border-radius:999px;padding:1px 7px;font-size:11px">{{ unread }}</span>{% endif %}</a><span class="mut">{{ me }}</span></span></header>
 <main>
 
 <div class="card">
@@ -141,6 +141,43 @@
   {% endif %}
 </div>
 
+
+<div class="card">
+  <h2>質問（未確認 {{ unread }}件）</h2>
+  {% if unread_list %}
+  <table>
+    <tr><th>日時</th><th>会員</th><th>宛日</th><th>内容</th></tr>
+    {% for c in unread_list %}
+    <tr><td class="mut">{{ c.created_at }}</td><td>{{ c.member_name or c.user_id }}</td>
+        <td class="mut">{{ c.target_date or "" }}</td><td>{{ c.body }}</td></tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="mut">未確認の質問はありません。</p>
+  {% endif %}
+  <div class="row" style="margin-top:10px">
+    <a href="/trainer/questions" style="text-decoration:none"><button>質問に答える（返信する）</button></a>
+    <span class="mut">会員が日別ページの❓から送った質問がここに届きます</span>
+  </div>
+</div>
+
+<div class="card">
+  <h2>ジム設定</h2>
+  <div class="row" style="margin-bottom:10px">
+    <input id="gymName" value="{{ gym.name }}" style="min-width:220px">
+    <button onclick="saveName(this)">ジム名を変更</button>
+  </div>
+  <div class="row" style="margin-bottom:10px">
+    <button class="ghost" onclick="regenCode(this)">入会コードを再発行</button>
+    <span class="mut">再発行すると古いコードは無効になります</span>
+  </div>
+  <div class="row">
+    <button class="ghost" onclick="showQr(this)">入会QRを表示</button>
+    <span class="mut">会員がLINEで読み取ると入会申請できます</span>
+  </div>
+  <div id="qrBox" style="margin-top:12px"></div>
+</div>
+
 </main>
 <script>
 async function inviteTrainer(btn){
@@ -177,6 +214,35 @@ async function removeMember(btn, mid){
     await UI.post("/api/gym/members/remove", {gym_id: {{ gym.id }}, membership_id: mid});
     UI.toast("解除しました");
     setTimeout(()=>location.reload(), 700);
+  });
+}
+
+async function saveName(btn){
+  const name = document.getElementById("gymName").value.trim();
+  if(!name){ UI.toast("ジム名を入力してください", false); return; }
+  await UI.run(btn, async () => {
+    await UI.post("/api/gym/settings", {gym_id: {{ gym.id }}, name: name});
+    UI.toast("ジム名を変更しました");
+    setTimeout(()=>location.reload(), 700);
+  });
+}
+async function regenCode(btn){
+  if(!confirm("入会コードを再発行しますか？（古いコードは使えなくなります）")) return;
+  await UI.run(btn, async () => {
+    const j = await UI.post("/api/gym/settings", {gym_id: {{ gym.id }}, regenerate_code: true});
+    UI.showCode("新しい入会コード", j.join_code);
+    UI.toast("再発行しました");
+  });
+}
+async function showQr(btn){
+  await UI.run(btn, async () => {
+    const res = await fetch("/api/gym/qr?gym_id={{ gym.id }}");
+    if(!res.ok) throw new Error("QR画像を取得できませんでした");
+    const url = URL.createObjectURL(await res.blob());
+    document.getElementById("qrBox").innerHTML =
+      '<div class="mut" style="margin-bottom:6px">このQRを会員に読み取ってもらってください</div>'
+      + '<img src="' + url + '" alt="入会QR" style="width:220px;height:220px;border:1px solid #e3e5e8;border-radius:8px">';
+    UI.toast("QRを表示しました");
   });
 }
 </script>

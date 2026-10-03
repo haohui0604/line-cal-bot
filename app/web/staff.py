@@ -8,7 +8,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from fastapi import APIRouter, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from linebot import LineBotApi
 from linebot.models import TextSendMessage
@@ -93,6 +93,7 @@ def trainer_home(request: Request):
     pending = gym_db.list_pending_for_staff(staff_id)
     return _render(request, "staff_members.html", {
         "request": request, "members": rows, "pending_count": len(pending),
+        "unread": gym_db.count_unread_member_comments(staff_id),
     })
 
 
@@ -104,6 +105,7 @@ def requests_page(request: Request):
     reqs = gym_db.list_pending_for_staff(staff_id)
     return _render(request, "staff_requests.html", {
         "request": request, "requests": reqs,
+        "unread": gym_db.count_unread_member_comments(staff_id),
     })
 
 
@@ -112,7 +114,8 @@ def approve(request: Request, membership_id: int):
     staff_id = _require_staff(request)
     req = gym_db.get_request_for_staff(staff_id, membership_id)
     if not req:
-        raise HTTPException(status_code=404, detail="申請が見つかりません")
+        raise HTTPException(status_code=404,
+                            detail="申請が見つかりません（すでに処理済みの可能性があります）")
     gym_db.approve_request(membership_id, trainer_id=staff_id)
     _push_to_member(
         req["user_id"],
@@ -126,7 +129,8 @@ def reject(request: Request, membership_id: int):
     staff_id = _require_staff(request)
     req = gym_db.get_request_for_staff(staff_id, membership_id)
     if not req:
-        raise HTTPException(status_code=404, detail="申請が見つかりません")
+        raise HTTPException(status_code=404,
+                            detail="申請が見つかりません（すでに処理済みの可能性があります）")
     gym_db.reject_request(membership_id)
     return RedirectResponse("/trainer/requests", status_code=303)
 
@@ -237,6 +241,9 @@ def gym_home(request: Request, gym_id: int = 0, mine: int = 0):
         "pending": gym_db.list_pending_requests(gid),
         "my_comments": gym_db.list_my_member_comments(uid, limit=30),
         "my_comment_total": gym_db.count_my_member_comments(uid),
+        "unread": gym_db.count_unread_member_comments(uid),
+        "threads": gym_db.list_member_threads(uid),
+        "unread_list": gym_db.list_unread_member_comments(uid, limit=50),
     })
 
 
@@ -296,3 +303,132 @@ def api_gym_my_comments(request: Request, limit: int = 30, offset: int = 0):
                                                    offset=max(0, offset)),
         "total": gym_db.count_my_member_comments(uid),
     }
+
+
+# ================= Phase 6: 質問スレッド・未確認・ジム設定 =================
+
+@router.get("/trainer/questions", response_class=HTMLResponse)
+def trainer_questions(request: Request):
+    """担当会員からの質問に答える（スレッド一覧＋未確認）."""
+    uid = _require_staff(request)
+    return _render(request, "trainer_questions.html", {
+        "request": request, "me": uid,
+        "threads": gym_db.list_member_threads(uid),
+        "unread": gym_db.count_unread_member_comments(uid),
+        "unread_list": gym_db.list_unread_member_comments(uid, limit=50),
+    })
+
+
+@router.get("/api/gym/threads")
+def api_gym_threads(request: Request):
+    uid = _require_staff(request)
+    return {
+        "threads": gym_db.list_member_threads(uid),
+        "unread": gym_db.count_unread_member_comments(uid),
+        "comments": gym_db.list_unread_member_comments(uid, limit=50),
+    }
+
+
+@router.get("/api/gym/thread/{member_id}")
+def api_gym_thread(request: Request, member_id: str):
+    uid = _require_staff(request)
+    return {
+        "member_id": member_id,
+        "comments": gym_db.fetch_member_thread(uid, member_id),
+        "unread": gym_db.count_unread_member_comments(uid),
+    }
+
+
+@router.post("/api/gym/thread/reply")
+def api_gym_thread_reply(request: Request, body: dict):
+    uid = _require_staff(request)
+    b = body or {}
+    member_id = str(b.get("member_id") or "").strip()
+    text = str(b.get("body") or "").strip()
+    if not member_id or not text:
+        raise HTTPException(status_code=400, detail="member_id と body が必要です")
+    if not gym_db.can_staff_view_member(uid, member_id):
+        raise HTTPException(status_code=403, detail="この会員を表示する権限がありません")
+    try:
+        reply_to = int(b.get("reply_to_id")) if b.get("reply_to_id") else None
+    except (TypeError, ValueError):
+        reply_to = None
+    directive = bool(b.get("is_directive"))
+    cid = gym_db.add_reply(
+        member_id=member_id, trainer_id=uid, body=text, reply_to_id=reply_to,
+        target_date=today_jst_date().isoformat(), is_directive=directive)
+    staff = gym_db.get_user(uid) or {}
+    msg = f"💬 {staff.get('display_name') or 'トレーナー'} から返信が届きました\n\n{text}"
+    if directive:
+        msg += "\n\n⭐ この内容はAIコーチの今後のアドバイスにも反映されます"
+    _push_to_member(member_id, msg)
+    return {"ok": True, "comment_id": cid}
+
+
+@router.post("/api/gym/requests/approve")
+def api_gym_request_approve(request: Request, body: dict):
+    uid = _require_staff(request)
+    mid = int((body or {}).get("membership_id") or 0)
+    if not mid:
+        raise HTTPException(status_code=400, detail="membership_id が必要です")
+    req = gym_db.get_request_for_staff(uid, mid)
+    if not req:
+        raise HTTPException(status_code=404,
+                            detail="申請が見つかりません（すでに処理済みの可能性があります）")
+    trainer_id = str((body or {}).get("trainer_id") or uid)
+    if not gym_db.approve_request(mid, trainer_id=trainer_id):
+        raise HTTPException(status_code=409, detail="すでに処理済みです")
+    _push_to_member(
+        req["user_id"],
+        f"🎉 「{req['gym_name']}」への登録が完了しました！\n"
+        "これから食事・運動の記録をよろしくお願いします。")
+    return {"ok": True}
+
+
+@router.post("/api/gym/requests/reject")
+def api_gym_request_reject(request: Request, body: dict):
+    uid = _require_staff(request)
+    mid = int((body or {}).get("membership_id") or 0)
+    if not mid:
+        raise HTTPException(status_code=400, detail="membership_id が必要です")
+    if not gym_db.get_request_for_staff(uid, mid):
+        raise HTTPException(status_code=404,
+                            detail="申請が見つかりません（すでに処理済みの可能性があります）")
+    if not gym_db.reject_request(mid):
+        raise HTTPException(status_code=409, detail="すでに処理済みです")
+    return {"ok": True}
+
+
+@router.post("/api/gym/settings")
+def api_gym_settings(request: Request, body: dict):
+    """ジム名の変更・入会コードの再発行（ジム管理者のみ）."""
+    uid, gid = _require_gym_admin(request, int((body or {}).get("gym_id") or 0))
+    b = body or {}
+    out = {}
+    name = str(b.get("name") or "").strip()
+    if name:
+        if not gym_db.rename_gym(gid, name):
+            raise HTTPException(status_code=400, detail="ジム名を変更できませんでした")
+        out["name"] = name
+    if b.get("regenerate_code"):
+        code = gym_db.regenerate_join_code(gid)
+        if not code:
+            raise HTTPException(status_code=400, detail="入会コードを再発行できませんでした")
+        out["join_code"] = code
+    if not out:
+        raise HTTPException(status_code=400, detail="変更内容がありません")
+    return {"ok": True, **out}
+
+
+@router.get("/api/gym/qr")
+def api_gym_qr(request: Request, gym_id: int = 0):
+    """入会コードのQR画像（PNG）を返す。会員はLINEで読み取って入会申請できる."""
+    uid, gid = _require_gym_admin(request, gym_id)
+    import io
+    import qrcode
+    gym = gym_db.get_gym(gid) or {}
+    url = f"{settings.BASE_URL.rstrip('/')}/join?code={gym.get('join_code') or ''}"
+    img = qrcode.make(url)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return Response(content=buf.getvalue(), media_type="image/png")

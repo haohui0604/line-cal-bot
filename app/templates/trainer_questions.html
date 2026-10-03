@@ -1,0 +1,125 @@
+<!doctype html><html lang="ja"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>質問に答える</title>
+<script src="/static/ui.js"></script>
+<style>
+ :root{--g:#06c755;--bg:#f5f6f8;--line:#e3e5e8;--mut:#8a8f98}
+ body{margin:0;background:var(--bg);font-family:system-ui,-apple-system,"Hiragino Sans",sans-serif;color:#1b1d21}
+ header{background:#1b1d21;color:#fff;padding:14px 18px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+ header a{color:#c9ccd1;text-decoration:none;font-size:13px}
+ main{max-width:900px;margin:0 auto;padding:18px}
+ .card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:14px}
+ h2{font-size:15px;margin:0 0 10px}
+ .mut{color:var(--mut);font-size:12px}
+ .badge{display:inline-block;background:#e5484d;color:#fff;border-radius:999px;padding:1px 8px;font-size:11px;font-weight:700}
+ .badge.zero{background:#e3e5e8;color:#8a8f98}
+ table{width:100%;border-collapse:collapse;font-size:13px}
+ th,td{border-bottom:1px solid var(--line);padding:7px 6px;text-align:left;vertical-align:top}
+ th{color:var(--mut);font-weight:600;font-size:12px}
+ button{font:inherit;padding:8px 12px;border-radius:8px;border:none;background:var(--g);color:#fff;cursor:pointer}
+ button.ghost{background:#fff;color:#1b1d21;border:1px solid var(--line)}
+ textarea{width:100%;min-height:80px;border:1px solid var(--line);border-radius:8px;padding:10px;font:inherit}
+ .bubble{border-radius:10px;padding:10px 12px;margin:8px 0;max-width:78%;white-space:pre-wrap}
+ .me{background:#06c7551a;border:1px solid #06c75555;margin-left:auto}
+ .them{background:#fff;border:1px solid var(--line)}
+ .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+</style></head><body>
+<header>
+  <b>❓ 質問に答える <span class="badge {{ 'zero' if not unread else '' }}">{{ unread }}</span></b>
+  <span class="row">
+    <a href="/trainer">担当会員</a>
+    <a href="/trainer/requests">入会申請</a>
+    <a href="/gym">ジム管理</a>
+  </span>
+</header>
+<main>
+
+<div class="card">
+  <h2>スレッド（担当会員 {{ threads|length }}名）</h2>
+  <table>
+    <tr><th>会員</th><th>最終コメント</th><th>未確認</th><th></th></tr>
+    {% for t in threads %}
+    <tr>
+      <td>{{ t.member_name }}</td>
+      <td class="mut">{{ t.last_at }}</td>
+      <td><span class="badge {{ 'zero' if not t.unread else '' }}">{{ t.unread }}</span></td>
+      <td><button class="ghost" onclick="openThread(this, '{{ t.user_id }}', '{{ t.member_name }}')">開く</button></td>
+    </tr>
+    {% endfor %}
+    {% if not threads %}
+    <tr><td colspan="4" class="mut">まだ質問はありません。会員が日別ページの❓から質問すると、ここに届きます。</td></tr>
+    {% endif %}
+  </table>
+</div>
+
+<div class="card" id="threadCard" style="display:none">
+  <h2 id="threadTitle">スレッド</h2>
+  <div id="threadBody" class="mut">読み込み中…</div>
+  <div style="margin-top:12px">
+    <textarea id="replyBody" placeholder="返信を入力（会員のLINEに通知されます）"></textarea>
+    <label class="mut" style="display:block;margin:8px 0">
+      <input type="checkbox" id="replyDirective"> ⭐ 翌日以降のAIコメントにも反映する（指導方針として記録）
+    </label>
+    <div class="row">
+      <button id="replyBtn" onclick="sendReply(this)">返信を送る</button>
+      <span class="mut" id="replyTo"></span>
+    </div>
+  </div>
+</div>
+
+</main>
+<script>
+let curMember = null, curReplyTo = null;
+
+async function openThread(btn, memberId, name){
+  curMember = memberId; curReplyTo = null;
+  document.getElementById("threadCard").style.display = "";
+  document.getElementById("threadTitle").textContent = "💬 " + name + " とのやりとり";
+  document.getElementById("replyTo").textContent = "";
+  const box = document.getElementById("threadBody");
+  box.innerHTML = '<span class="mut">読み込み中…</span>';
+  await UI.run(btn, async () => {
+    const j = await UI.get("/api/gym/thread/" + encodeURIComponent(memberId));
+    if(!j.comments.length){ box.innerHTML = '<span class="mut">まだやりとりはありません。</span>'; return; }
+    box.innerHTML = j.comments.map(c => {
+      const mine = c.author_type === "trainer";
+      return '<div class="bubble ' + (mine ? "me" : "them") + '">'
+        + '<div class="mut">' + (mine ? "自分（トレーナー）" : (c.author_name || c.author_id))
+        + ' ・ ' + (c.created_at || "") + (c.is_directive ? ' ・⭐方針' : '') + '</div>'
+        + esc(c.body)
+        + (mine ? '' : ' <button class="ghost" style="padding:2px 8px;font-size:12px" '
+            + 'onclick="setReplyTo(' + c.id + ')">この質問に返信</button>')
+        + '</div>';
+    }).join("");
+    UI.toast("読み込みました（未確認 " + j.unread + "件）");
+  });
+}
+
+function esc(s){ const d = document.createElement("div"); d.textContent = s == null ? "" : s; return d.innerHTML; }
+
+function setReplyTo(id){
+  curReplyTo = id;
+  document.getElementById("replyTo").textContent = "この質問（#" + id + "）への返信として送ります";
+  document.getElementById("replyBody").focus();
+}
+
+async function sendReply(btn){
+  const body = document.getElementById("replyBody").value.trim();
+  if(!curMember){ UI.toast("先にスレッドを開いてください", false); return; }
+  if(!body){ UI.toast("返信内容を入力してください", false); return; }
+  await UI.run(btn, async () => {
+    await UI.post("/api/gym/thread/reply", {
+      member_id: curMember, body: body,
+      reply_to_id: curReplyTo,
+      is_directive: document.getElementById("replyDirective").checked
+    });
+    UI.toast("返信を送信しました");
+    document.getElementById("replyBody").value = "";
+    document.getElementById("replyDirective").checked = false;
+    curReplyTo = null;
+    document.getElementById("replyTo").textContent = "";
+    setTimeout(() => location.reload(), 800);
+  });
+}
+</script>
+</body></html>

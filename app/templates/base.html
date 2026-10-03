@@ -15,6 +15,7 @@
   header b{font-size:16px}
   header a{color:var(--muted);text-decoration:none;font-size:14px}
   header a:hover{color:var(--text)}
+  .nav-badge{background:#e5484d;color:#fff;border-radius:999px;padding:1px 7px;font-size:11px;font-weight:700}
   main{max-width:960px;margin:24px auto;padding:0 16px}
   h2{font-size:20px}
   .card{background:var(--card);border:1px solid var(--line);border-radius:12px;
@@ -46,6 +47,7 @@
   <a href="/trainer">担当会員</a>
   <a href="/trainer/requests">入会申請{% if pending_count %}（{{ pending_count }}）{% endif %}</a>
   <span style="margin-left:auto"></span>
+  <a href="/trainer/questions">質問{% if unread %} <span class="nav-badge">{{ unread }}</span>{% endif %}</a>
   <form class="inline" method="post" action="/logout">
     <button class="btn btn-ghost" type="submit">ログアウト</button>
   </form>
