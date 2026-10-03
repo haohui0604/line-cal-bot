@@ -107,7 +107,17 @@ function loadLiffSdk(){
       <button id="tabComments" class="on">💬 コメント</button>
       <button id="tabHistory">🍽 履歴</button>
     </div>
-    <div id="paneComments" class="card"></div>
+    <div class="card">
+  <b>👥 記録の共有範囲</b>
+  <div id="shareBox" class="muted" style="margin-top:6px">読み込み中…</div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+    <button id="shareAssigned" class="btn btn-ghost btn-sm" onclick="setShare('assigned', this)">担当トレーナーのみ</button>
+    <button id="shareGym" class="btn btn-ghost btn-sm" onclick="setShare('gym', this)">ジムのスタッフ全員</button>
+  </div>
+  <p class="muted" style="margin-top:6px">「ジムのスタッフ全員」を選ぶと、同じジムのトレーナー・管理者があなたの記録を閲覧できます（同意した日時を記録します）。</p>
+</div>
+
+<div id="paneComments" class="card"></div>
     <div id="paneHistory" class="card" style="display:none"></div>
   </div>
 </main>
@@ -270,12 +280,21 @@ async function main(){
   const c = await api("/api/me/comments", {cm_offset: 0});
   const pc = document.getElementById("paneComments");
   pc.innerHTML = c.comments.length ? "" : '<p class="muted">まだコメントはありません。</p>';
+  if(c.unread){
+    const nb = document.createElement("div");
+    nb.id = "unreadLine"; nb.style.cssText = "margin:6px 0;font-size:13px;color:#e5484d";
+    nb.textContent = "🔔 新着 " + c.unread + "件";
+    pc.insertBefore(nb, pc.firstChild);
+    const tb = document.getElementById("tabComments");
+    if(tb) tb.textContent = "💬 コメント(" + c.unread + ")";
+  }
   for(const cm of c.comments){
     const div = document.createElement("div");
     div.style.cssText = "border-bottom:1px solid var(--line);padding:10px 0";
-    const badge = cm.author_type === "trainer"
+    const badge = (cm.is_new ? '<span class="badge" style="background:#e5484d">新着</span> ' : "")
+      + (cm.author_type === "trainer"
       ? '<span class="badge">トレーナー</span>'
-      : '<span class="badge badge-green">AIコーチ</span>';
+      : '<span class="badge badge-green">AIコーチ</span>');
     div.innerHTML = badge + ' <span class="muted">' + (cm.created_at||"") +
       '</span><div style="margin-top:4px;white-space:pre-wrap"></div>';
     div.querySelector("div").textContent = cm.body;
@@ -293,9 +312,10 @@ async function main(){
         for(const cm of more.comments){
           const div = document.createElement("div");
           div.style.cssText = "border-bottom:1px solid var(--line);padding:10px 0";
-          const badge = cm.author_type === "trainer"
+          const badge = (cm.is_new ? '<span class="badge" style="background:#e5484d">新着</span> ' : "")
+            + (cm.author_type === "trainer"
             ? '<span class="badge">トレーナー</span>'
-            : '<span class="badge badge-green">AIコーチ</span>';
+            : '<span class="badge badge-green">AIコーチ</span>');
           div.innerHTML = badge + ' <span class="muted">' + (cm.created_at||"") +
             '</span><div style="margin-top:4px;white-space:pre-wrap"></div>';
           div.querySelector("div").textContent = cm.body;
@@ -308,6 +328,9 @@ async function main(){
     }
     btn.dataset.off = c.comments.length;
     btn.style.display = c.has_more ? "" : "none";
+  }
+  if(c.unread){
+    try { await api("/api/me/comments/read", {}); } catch(e) {}
   }
 
   // 履歴
@@ -352,6 +375,34 @@ function switchTab(showComments){
   document.getElementById("tabHistory").className = showComments ? "" : "on";
 }
 main().catch(e => { console.error(e); showErr("読み込みエラー: " + (e && e.message ? e.message : e)); });
+
+  // 共有設定（Phase 8）
+  async function loadShare(){
+    const box = document.getElementById("shareBox"); if(!box) return;
+    try {
+      const j = await api("/api/me/share-scope", {});
+      const sh = j.share || {};
+      if(!sh.gym_name){ box.textContent = "ジムに未加入です（入会コードを送ると申請できます）"; return; }
+      const on = sh.share_scope === "gym";
+      box.textContent = sh.gym_name + " ・ " + (on ? "ジムのスタッフ全員に共有中" : "担当トレーナーのみ")
+        + (sh.consent_at ? "（同意 " + String(sh.consent_at).slice(0,10) + "）" : "");
+      const a = document.getElementById("shareAssigned");
+      const g = document.getElementById("shareGym");
+      if(a) a.className = "btn btn-sm " + (on ? "btn-ghost" : "");
+      if(g) g.className = "btn btn-sm " + (on ? "" : "btn-ghost");
+    } catch(e) { box.textContent = "共有設定を取得できませんでした"; }
+  }
+  async function setShare(scope, btn){
+    const msg = scope === "gym"
+      ? "同じジムのトレーナー・管理者があなたの記録を閲覧できるようになります。同意しますか？"
+      : "共有を「担当トレーナーのみ」に戻しますか？";
+    if(!confirm(msg)) return;
+    btn.disabled = true;
+    try { await api("/api/me/share-scope", {scope: scope}); await loadShare(); }
+    catch(e) { alert("更新に失敗しました: " + (e && e.message ? e.message : e)); }
+    finally { btn.disabled = false; }
+  }
+  loadShare();
 </script>
 </body>
 </html>

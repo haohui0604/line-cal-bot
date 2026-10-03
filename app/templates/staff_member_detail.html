@@ -44,6 +44,13 @@
   <canvas id="pfcChart" height="140"></canvas>
 </div>
 
+<div class="card">
+  <b>⭐ 指導方針（AIコーチに反映中）</b>
+  <div id="dirList" class="muted" style="margin-top:6px">読み込み中…</div>
+  <p class="muted" style="margin-top:6px">コメント送信時に「⭐ 翌日以降のAIコメントにも反映する」を
+    チェックした内容が、直近28日ぶん反映されます（新しい方針が優先）。</p>
+</div>
+
 <div class="tabs">
   <button id="tabComments" class="on">💬 コメント</button>
   <button id="tabHistory">🍽 履歴</button>
@@ -155,5 +162,33 @@
     document.getElementById("tabHistory").className = c ? "" : "on";
   }
 })();
+
+  async function loadDirectives(){
+    const box = document.getElementById("dirList"); if(!box) return;
+    const r = await fetch("/api/gym/directives/{{ member_id }}");
+    const j = await r.json().catch(function(){ return {}; });
+    if(!r.ok){ box.textContent = j.detail || "読み込みに失敗しました"; return; }
+    if(!j.directives.length){
+      box.textContent = "⭐方針として記録された指導はまだありません";
+      return;
+    }
+    box.innerHTML = j.directives.map(function(d){
+      return '<div style="border-bottom:1px solid var(--line);padding:8px 0">'
+        + '<div class="muted">' + (d.created_at || "") + '</div>'
+        + '<div style="white-space:pre-wrap">' + dirEsc(d.body) + '</div>'
+        + '<button class="btn btn-ghost" onclick="toggleDirective(' + d.id + ', false)">反映を解除</button>'
+        + '</div>';
+    }).join("");
+  }
+  function dirEsc(v){ const d = document.createElement("div"); d.textContent = v == null ? "" : v; return d.innerHTML; }
+  async function toggleDirective(id, on){
+    if(!confirm("この指導方針のAI反映を解除しますか？")) return;
+    const r = await fetch("/api/gym/directive/toggle", {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({comment_id: id, on: on})});
+    if(!r.ok){ const j = await r.json().catch(function(){ return {}; }); alert(j.detail || "更新に失敗しました"); return; }
+    loadDirectives();
+  }
+  loadDirectives();
 </script>
 {% endblock %}

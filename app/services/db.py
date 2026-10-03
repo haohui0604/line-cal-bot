@@ -112,9 +112,14 @@ ADDED_COLUMNS = {
     "gyms": {"deleted_at": "TEXT", "deleted_by": "TEXT"},
     # 除籍・担当解除の記録
     "memberships": {"removed_by": "TEXT", "removed_at": "TEXT",
-                    "removed_reason": "TEXT"},
+                    "removed_reason": "TEXT",
+                    # 記録の共有範囲（assigned=担当のみ / gym=同一ジムのスタッフ全員）
+                    "data_share_scope": "TEXT DEFAULT 'assigned'",
+                    "consent_at": "TEXT"},
     # コメントのスレッド化（ユーザ返信→担当トレーナー通知）
-    "comments": {"reply_to_id": "INTEGER", "notified_at": "TEXT"},
+    "comments": {"reply_to_id": "INTEGER", "notified_at": "TEXT",
+                 # 会員側の既読（NULL = 未読）
+                 "member_read_at": "TEXT"},
     # 招待コードの用途（trainer / gym_admin）
     "trainer_invites": {"role": "TEXT DEFAULT 'trainer'"},
 }

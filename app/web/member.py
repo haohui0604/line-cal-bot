@@ -161,6 +161,7 @@ def me_comments(body: TokenIn):
     items = gym_db.fetch_comments_for_user(uid, limit=lim, offset=off)
     total = gym_db.count_comments_for_user(uid)
     return {"comments": items, "offset": off, "limit": lim, "total": total,
+            "unread": gym_db.count_unread_comments_for_member(uid),
             "has_more": off + len(items) < total}
 
 
@@ -180,3 +181,32 @@ def member_day_page():
         "liff_id": settings.LIFF_ID,
         "initial_date": jst_dates.yesterday_jst(),
     })
+
+
+# ================= Phase 8: 会員の既読 / 共有設定 =================
+
+@router.post("/api/me/comments/read")
+def me_comments_read(body: dict):
+    """コメントを開いた時点で既読にする（新着バッジの消し込み）."""
+    uid = _verify_uid((body or {}).get("id_token") or "")
+    marked = gym_db.mark_member_comments_read(uid, (body or {}).get("up_to_id"))
+    return {"ok": True, "marked": marked,
+            "unread": gym_db.count_unread_comments_for_member(uid)}
+
+
+@router.post("/api/me/share-scope")
+def me_share_scope(body: dict):
+    """記録の共有範囲（assigned=担当のみ / gym=同一ジムのスタッフ全員）.
+
+    scope を省略すると現在値を返す。変更時は同意日時を記録する。
+    """
+    b = body or {}
+    uid = _verify_uid(b.get("id_token") or "")
+    if "scope" not in b:
+        return {"share": gym_db.get_member_share_scope(uid),
+                "unread": gym_db.count_unread_comments_for_member(uid)}
+    res = gym_db.set_member_share_scope(uid, b.get("scope"))
+    if not res.get("ok"):
+        raise HTTPException(status_code=400,
+                            detail="共有設定を変更できませんでした（ジム未加入の可能性）")
+    return {"ok": True, "share": gym_db.get_member_share_scope(uid)}

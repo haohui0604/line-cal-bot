@@ -432,3 +432,34 @@ def api_gym_qr(request: Request, gym_id: int = 0):
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return Response(content=buf.getvalue(), media_type="image/png")
+
+
+# ================= Phase 8: 指導方針（AI反映）の管理 =================
+
+@router.get("/api/gym/directives/{member_id}")
+def api_gym_directives(request: Request, member_id: str):
+    """その会員について AIコーチに反映中の⭐指導方針."""
+    uid = _require_staff(request)
+    if not gym_db.can_staff_view_member(uid, member_id):
+        raise HTTPException(status_code=403, detail="この会員を表示する権限がありません")
+    return {"directives": gym_db.list_active_directives(member_id)}
+
+
+@router.post("/api/gym/directive/toggle")
+def api_gym_directive_toggle(request: Request, body: dict):
+    """⭐方針フラグの切り替え（解除できるようにする）."""
+    uid = _require_staff(request)
+    b = body or {}
+    try:
+        cid = int(b.get("comment_id") or 0)
+    except (TypeError, ValueError):
+        cid = 0
+    if not cid:
+        raise HTTPException(status_code=400, detail="comment_id が必要です")
+    res = gym_db.set_directive(cid, bool(b.get("on")), uid)
+    if not res:
+        raise HTTPException(status_code=404, detail="コメントが見つかりません")
+    if res.get("error") == "forbidden":
+        raise HTTPException(status_code=403,
+                            detail="この会員のコメントを変更する権限がありません")
+    return res

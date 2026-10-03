@@ -439,7 +439,7 @@ def build_prompt(persona: dict, f: dict, goal_line: str = "",
             "敬意を保った言い方に直して必要な分だけ触れる。"
             "乱暴・断定的な言い回しや、今日の内容と無関係な発言は引用しない。\n")
     elif directives:
-        lines = "\n".join(f"- {_clean(d['body'])}" for d in directives)
+        lines = "\n".join(f"- [方針 {str(d.get('created_at') or '')[:10]}] {_clean(d['body'])}" for d in directives)
         past_block = (
             "\n# 過去の担当トレーナーからの指導（参考情報・発言そのもの）\n"
             + lines + "\n"

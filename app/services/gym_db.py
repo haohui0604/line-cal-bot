@@ -206,13 +206,22 @@ def add_comment(*, user_id: str, body: str, author_type: str,
 
 def fetch_comments_for_user(user_id: str, limit: int = 50,
                            offset: int = 0) -> List[Dict[str, Any]]:
-    """コメントを新しい順に取得（ページング用に offset を受ける）."""
+    """コメントを新しい順に取得（会員から見た「新着」フラグ付き）."""
+    from app.services.db import table_columns
     with get_conn() as c:
+        has_read = "member_read_at" in table_columns(c, "comments")
         rows = c.execute(
             "SELECT * FROM comments WHERE user_id=?"
             " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
             (user_id, limit, max(0, offset))).fetchall()
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["is_new"] = bool(has_read and d.get("author_type") != "member"
+                           and not d.get("member_read_at"))
+        out.append(d)
+    return out
+
 
 
 def count_comments_for_user(user_id: str) -> int:
@@ -223,17 +232,31 @@ def count_comments_for_user(user_id: str) -> int:
 
 
 def fetch_active_directives(user_id: str, days: int = 28) -> List[Dict[str, Any]]:
-    """AIコーチのコンテキストに載せる、トレーナーの「指導指示」."""
+    """AIコーチのコンテキストに載せる、トレーナーの「指導方針」.
+
+    ⭐方針（is_directive=1）だけを対象に直近 days 日ぶんを新しい順で返す。
+    同じ文面は最新の1件に畳み、最大10件に絞る。本文の先頭に日付を付けて
+    AIが「新しい方針を優先」できるようにする。
+    """
     with get_conn() as c:
         rows = c.execute(
             "SELECT body, created_at FROM comments"
             " WHERE user_id=? AND author_type='trainer' AND is_directive=1"
             " AND created_at >= datetime('now', ?)"
-            " ORDER BY created_at DESC", (user_id, f"-{days} days")).fetchall()
-    return [dict(r) for r in rows]
+            " ORDER BY created_at DESC, id DESC", (user_id, f"-{days} days")).fetchall()
+    out, seen = [], set()
+    for r in rows:
+        body = (r["body"] or "").strip()
+        if not body or body in seen:
+            continue
+        seen.add(body)
+        out.append({"body": body,
+                    "created_at": r["created_at"]})
+        if len(out) >= 10:
+            break
+    return out
 
 
-# ---- スタッフ（トレーナー / ジム管理者）向けの参照・権限 (Phase 2) ----
 
 def get_staff_memberships(user_id: str) -> List[Dict[str, Any]]:
     """そのユーザーが trainer / gym_admin として active な所属一覧."""
@@ -251,38 +274,41 @@ def is_staff(user_id: str) -> bool:
 
 
 def list_members_for_staff(staff_id: str) -> List[Dict[str, Any]]:
-    """スタッフが見てよい会員一覧（自分の担当 + 自分がadminのジム全会員）."""
+    """スタッフが見てよい会員一覧.
+
+    対象: 自分の担当 / 自分が管理者のジム / 会員が「ジム内共有」に同意した
+    同一ジムの会員（_member_scope を参照）。
+    """
+    from app.services.db import table_columns
     with get_conn() as c:
-        rows = c.execute("""
+        has_scope = "data_share_scope" in table_columns(c, "memberships")
+        scope_col = "m.data_share_scope" if has_scope else "NULL"
+        frag, params = _member_scope(c, staff_id)
+        rows = c.execute(f"""
             SELECT DISTINCT m.user_id, m.gym_id, m.trainer_id,
+                   {scope_col} AS share_scope,
                    u.display_name, u.picture_url, g.name AS gym_name
             FROM memberships m
             JOIN gyms g ON g.id = m.gym_id
             LEFT JOIN users u ON u.line_user_id = m.user_id
-            WHERE m.role='member' AND m.status='active' AND (
-                m.trainer_id = ?
-                OR m.gym_id IN (
-                    SELECT gym_id FROM memberships
-                    WHERE user_id=? AND role='gym_admin' AND status='active')
-            )
+            WHERE m.role='member' AND m.status='active' AND {frag}
             ORDER BY u.display_name
-        """, (staff_id, staff_id)).fetchall()
+        """, params).fetchall()
     return [dict(r) for r in rows]
+
 
 
 def can_staff_view_member(staff_id: str, member_id: str) -> bool:
     """会員詳細・コメント投稿の権限チェック."""
     with get_conn() as c:
-        row = c.execute("""
+        frag, params = _member_scope(c, staff_id)
+        row = c.execute(f"""
             SELECT 1 FROM memberships m
-            WHERE m.role='member' AND m.status='active' AND m.user_id=? AND (
-                m.trainer_id = ?
-                OR m.gym_id IN (
-                    SELECT gym_id FROM memberships
-                    WHERE user_id=? AND role='gym_admin' AND status='active')
-            ) LIMIT 1
-        """, (member_id, staff_id, staff_id)).fetchone()
+            WHERE m.role='member' AND m.status='active' AND m.user_id=?
+              AND {frag} LIMIT 1
+        """, [member_id] + params).fetchone()
     return row is not None
+
 
 
 def list_pending_for_staff(staff_id: str) -> List[Dict[str, Any]]:
@@ -684,38 +710,43 @@ def _unread_clause() -> str:
 
 
 def list_unread_member_comments(trainer_id: str, limit: int = 50):
-    """自分が担当する会員からの未確認コメント（新しい順）."""
+    """自分が見てよい会員からの未確認コメント（新しい順）."""
     with get_conn() as c:
         _ensure_reply_support(c)
+        frag, params = _member_scope(c, trainer_id)
         rows = c.execute(f"""
             SELECT cm.id, cm.user_id, cm.body, cm.created_at, cm.target_date,
                    u.display_name AS member_name
               FROM comments cm
               JOIN memberships m ON m.user_id=cm.user_id AND m.role='member'
-               AND m.status='active' AND m.trainer_id=?
+               AND m.status='active' AND {frag}
               LEFT JOIN users u ON u.line_user_id=cm.user_id
              WHERE cm.author_type='member' AND {_unread_clause()}
              ORDER BY cm.created_at DESC, cm.id DESC LIMIT ?
-        """, (trainer_id, int(limit))).fetchall()
+        """, [*params, int(limit)]).fetchall()
     return [dict(r) for r in rows]
+
 
 
 def count_unread_member_comments(trainer_id: str) -> int:
     with get_conn() as c:
         _ensure_reply_support(c)
+        frag, params = _member_scope(c, trainer_id)
         r = c.execute(f"""
             SELECT COUNT(*) AS n FROM comments cm
               JOIN memberships m ON m.user_id=cm.user_id AND m.role='member'
-               AND m.status='active' AND m.trainer_id=?
+               AND m.status='active' AND {frag}
              WHERE cm.author_type='member' AND {_unread_clause()}
-        """, (trainer_id,)).fetchone()
+        """, params).fetchone()
     return int(r["n"] if r else 0)
 
 
+
 def list_member_threads(trainer_id: str, limit: int = 20):
-    """担当会員ごとの最新コメント・未確認件数（未確認が多い順）."""
+    """見てよい会員ごとの最新コメント・未確認件数（未確認が多い順）."""
     with get_conn() as c:
         _ensure_reply_support(c)
+        frag, params = _member_scope(c, trainer_id)
         rows = c.execute(f"""
             SELECT cm.user_id,
                    COALESCE(u.display_name, cm.user_id) AS member_name,
@@ -725,22 +756,20 @@ def list_member_threads(trainer_id: str, limit: int = 20):
                    COUNT(*) AS total
               FROM comments cm
               JOIN memberships m ON m.user_id=cm.user_id AND m.role='member'
-               AND m.status='active' AND m.trainer_id=?
+               AND m.status='active' AND {frag}
               LEFT JOIN users u ON u.line_user_id=cm.user_id
              GROUP BY cm.user_id
              ORDER BY unread DESC, last_at DESC LIMIT ?
-        """, (trainer_id, int(limit))).fetchall()
+        """, [*params, int(limit)]).fetchall()
     return [dict(r) for r in rows]
 
 
+
 def fetch_member_thread(trainer_id: str, member_id: str, limit: int = 50):
-    """自分が担当する会員とのやりとり（会員の質問＋自分の返信）を古い順で返す."""
+    """見てよい会員とのやりとり（会員の質問＋スタッフの返信）を古い順で返す."""
     with get_conn() as c:
         _ensure_reply_support(c)
-        ok = c.execute(
-            "SELECT 1 FROM memberships WHERE user_id=? AND role='member'"
-            " AND status='active' AND trainer_id=?", (member_id, trainer_id)).fetchone()
-        if not ok:
+        if not can_staff_view_member(trainer_id, member_id):
             return []
         rows = c.execute("""
             SELECT cm.id, cm.author_type, cm.author_id, cm.body, cm.created_at,
@@ -748,25 +777,24 @@ def fetch_member_thread(trainer_id: str, member_id: str, limit: int = 50):
                    COALESCE(u.display_name, cm.author_id) AS author_name
               FROM comments cm
               LEFT JOIN users u ON u.line_user_id=cm.author_id
-             WHERE cm.user_id=? AND (cm.author_type='member' OR cm.author_id=?)
+             WHERE cm.user_id=? AND cm.author_type IN ('member','trainer')
              ORDER BY cm.created_at DESC, cm.id DESC LIMIT ?
-        """, (member_id, trainer_id, int(limit))).fetchall()
+        """, (member_id, int(limit))).fetchall()
     return [dict(r) for r in reversed(rows)]
+
 
 
 def mark_thread_read(trainer_id: str, member_id: str) -> int:
     """スレッドを開いた時点で会員の未確認コメントを確認済みにする."""
     with get_conn() as c:
         _ensure_reply_support(c)
-        ok = c.execute(
-            "SELECT 1 FROM memberships WHERE user_id=? AND role='member'"
-            " AND status='active' AND trainer_id=?", (member_id, trainer_id)).fetchone()
-        if not ok:
+        if not can_staff_view_member(trainer_id, member_id):
             return 0
         cur = c.execute("UPDATE comments SET notified_at=CURRENT_TIMESTAMP"
                         " WHERE user_id=? AND author_type='member'"
                         "   AND (notified_at IS NULL OR notified_at='')", (member_id,))
         return int(cur.rowcount or 0)
+
 
 
 def rename_gym(gym_id: int, name: str) -> bool:
@@ -783,3 +811,125 @@ def regenerate_join_code(gym_id: int) -> Optional[str]:
         if not (cur.rowcount or 0):
             return None
         return code
+
+
+# ================= Phase 8: 共有スコープ / 会員の既読 / 指導方針 =================
+
+def _member_scope(c, staff_id: str, alias: str = "m"):
+    """スタッフが閲覧できる会員の条件（SQL断片, パラメータ）を返す.
+
+    許可するのは次のいずれか:
+      1) 自分が担当トレーナー
+      2) 自分が gym_admin のジムの会員
+      3) 会員が「ジム内スタッフに共有」へ同意していて、自分が同じジムの
+         active なスタッフ（trainer / gym_admin）
+    memberships.data_share_scope が無い環境では 3) を無効化する。
+    """
+    from app.services.db import table_columns
+    frag = (f"({alias}.trainer_id = ?"
+            f" OR {alias}.gym_id IN (SELECT gym_id FROM memberships"
+            f" WHERE user_id=? AND role='gym_admin' AND status='active')")
+    params: List[Any] = [staff_id, staff_id]
+    if "data_share_scope" in table_columns(c, "memberships"):
+        frag += (f" OR ({alias}.data_share_scope='gym'"
+                 f" AND {alias}.gym_id IN (SELECT gym_id FROM memberships"
+                 f" WHERE user_id=? AND role IN ('trainer','gym_admin')"
+                 f" AND status='active'))")
+        params.append(staff_id)
+    return frag + ")", params
+
+
+def get_member_share_scope(user_id: str) -> Optional[Dict[str, Any]]:
+    """会員の共有設定（現在のスコープと同意日時）."""
+    from app.services.db import table_columns
+    with get_conn() as c:
+        cols = table_columns(c, "memberships")
+        scope_col = "m.data_share_scope" if "data_share_scope" in cols else "'assigned'"
+        cons_col = "m.consent_at" if "consent_at" in cols else "NULL"
+        row = c.execute(f"""
+            SELECT m.id, m.gym_id, g.name AS gym_name,
+                   {scope_col} AS share_scope, {cons_col} AS consent_at
+              FROM memberships m JOIN gyms g ON g.id=m.gym_id
+             WHERE m.user_id=? AND m.role='member' AND m.status='active'
+             ORDER BY m.id DESC LIMIT 1
+        """, (user_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def set_member_share_scope(user_id: str, scope: str) -> Dict[str, Any]:
+    """会員本人が共有範囲を変更する（同意した日時を記録）."""
+    from datetime import datetime, timezone
+    from app.services.db import table_columns
+    scope = "gym" if str(scope) == "gym" else "assigned"
+    with get_conn() as c:
+        if "data_share_scope" not in table_columns(c, "memberships"):
+            return {"ok": False, "reason": "unsupported"}
+        row = c.execute(
+            "SELECT id FROM memberships WHERE user_id=? AND role='member'"
+            " AND status='active' ORDER BY id DESC LIMIT 1", (user_id,)).fetchone()
+        if not row:
+            return {"ok": False, "reason": "no_membership"}
+        consent = (datetime.now(timezone.utc).isoformat() if scope == "gym" else None)
+        c.execute("UPDATE memberships SET data_share_scope=?, consent_at=?,"
+                  " updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                  (scope, consent, row["id"]))
+        return {"ok": True, "scope": scope, "membership_id": row["id"]}
+
+
+def count_unread_comments_for_member(user_id: str) -> int:
+    """会員から見た未読コメント（トレーナー / AIコーチ）の件数."""
+    from app.services.db import table_columns
+    with get_conn() as c:
+        if "member_read_at" not in table_columns(c, "comments"):
+            return 0
+        r = c.execute(
+            "SELECT COUNT(*) AS n FROM comments WHERE user_id=?"
+            " AND author_type<>'member'"
+            " AND (member_read_at IS NULL OR member_read_at='')",
+            (user_id,)).fetchone()
+    return int((r["n"] if r else 0) or 0)
+
+
+def mark_member_comments_read(user_id: str, up_to_id: Optional[int] = None) -> int:
+    """会員がコメントを開いた時点で既読にする."""
+    from app.services.db import table_columns
+    with get_conn() as c:
+        if "member_read_at" not in table_columns(c, "comments"):
+            return 0
+        sql = ("UPDATE comments SET member_read_at=CURRENT_TIMESTAMP"
+               " WHERE user_id=? AND author_type<>'member'"
+               " AND (member_read_at IS NULL OR member_read_at='')")
+        params: List[Any] = [user_id]
+        if up_to_id:
+            sql += " AND id<=?"
+            params.append(int(up_to_id))
+        cur = c.execute(sql, params)
+        return int(cur.rowcount or 0)
+
+
+def list_active_directives(member_id: str, days: int = 28,
+                           limit: int = 20) -> List[Dict[str, Any]]:
+    """スタッフ画面で見る「AIに反映中の指導方針」."""
+    with get_conn() as c:
+        rows = c.execute(
+            "SELECT id, body, created_at, author_id, is_directive FROM comments"
+            " WHERE user_id=? AND author_type='trainer' AND is_directive=1"
+            " AND created_at >= datetime('now', ?)"
+            " ORDER BY created_at DESC, id DESC LIMIT ?",
+            (member_id, f"-{int(days)} days", int(limit))).fetchall()
+    return [dict(r) for r in rows]
+
+
+def set_directive(comment_id: int, on: bool, by_user_id: str) -> Dict[str, Any]:
+    """コメントの⭐方針フラグを切り替える（閲覧権限のあるスタッフのみ）."""
+    with get_conn() as c:
+        row = c.execute("SELECT id, user_id FROM comments WHERE id=?",
+                        (int(comment_id),)).fetchone()
+        if not row:
+            return {}
+        member_id = row["user_id"]
+        if not can_staff_view_member(by_user_id, member_id):
+            return {"error": "forbidden"}
+        c.execute("UPDATE comments SET is_directive=? WHERE id=?",
+                  (1 if on else 0, int(comment_id)))
+        return {"ok": True, "member_id": member_id, "is_directive": bool(on)}

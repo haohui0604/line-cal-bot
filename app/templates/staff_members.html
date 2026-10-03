@@ -17,7 +17,8 @@
   <tr onclick="location.href='/trainer/members/{{ m.user_id }}'" style="cursor:pointer">
     <td style="width:44px">{% if m.picture_url %}<img class="avatar" src="{{ m.picture_url }}" alt="">{% endif %}</td>
     <td><a href="/trainer/members/{{ m.user_id }}">{{ m.display_name or m.user_id }}</a></td>
-    <td class="muted">{{ m.gym_name }}</td>
+    <td class="muted">{{ m.gym_name }}{% if m.share_scope == 'gym' %}
+        <span class="badge" style="background:#3b82f6">共有</span>{% endif %}</td>
     <td>{{ "%.0f"|format(m.today_kcal) }} kcal</td>
     <td class="muted">{{ m.last_record_date or "—" }}</td>
   </tr>
