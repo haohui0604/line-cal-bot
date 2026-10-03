@@ -53,6 +53,25 @@ def _error_page(title: str, detail: str, status_code: int = 400,
         status_code=status_code)
 
 
+def _render(request, name: str, ctx: dict = None):
+    """Starlette の新旧どちらの TemplateResponse シグネチャでも描画する.
+
+    新しい Starlette は TemplateResponse(request, name, context) の順なので、
+    旧来の ("name", {...}) 呼び出しは name に dict が入り
+    "unhashable type: 'dict'" で 500 になる。
+    """
+    import inspect
+    ctx = dict(ctx or {})
+    ctx.setdefault("request", request)
+    try:
+        params = list(inspect.signature(templates.TemplateResponse).parameters)
+    except (TypeError, ValueError):
+        params = []
+    if params[:2] == ["request", "name"]:
+        return templates.TemplateResponse(request, name, ctx)
+    return templates.TemplateResponse(name, ctx)
+
+
 @router.get("/")
 def index(request: Request):
     """入口: ログイン済みスタッフは管理画面へ、それ以外はログインへ."""
@@ -160,7 +179,7 @@ def trainer_invite_page(request: Request):
     if not uid:
         from fastapi.responses import RedirectResponse
         return RedirectResponse("/login")
-    return templates.TemplateResponse("trainer_invite.html", {"request": request})
+    return _render(request, "trainer_invite.html", {"request": request})
 
 
 @router.post("/api/trainer-invite")

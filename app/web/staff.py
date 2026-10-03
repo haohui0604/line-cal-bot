@@ -18,7 +18,7 @@ from app.config import settings
 from app.services.db import (
     fetch_day_summary, fetch_recent_entries, fetch_weight_series,
 )
-from app.services import gym_db
+from app.services import bi, goals, gym_db, periods
 from app.services.dates import today_jst_date
 from app.services.day_view import pfc_percent_series
 
@@ -81,14 +81,17 @@ def _push_to_member(member_id: str, text: str) -> None:
 def trainer_home(request: Request):
     staff_id = _require_staff(request)
     today = today_jst_date().isoformat()
+    members = gym_db.list_members_for_staff(staff_id)
+    badges = goals.list_goal_badges([m["user_id"] for m in members])
     rows = []
-    for m in gym_db.list_members_for_staff(staff_id):
+    for m in members:
         latest = fetch_recent_entries(m["user_id"], limit=1)
         s = fetch_day_summary(m["user_id"], today)
         rows.append({
             **m,
             "today_kcal": s.get("intake_kcal") or 0,
             "last_record_date": latest[0]["date"] if latest else None,
+            "goal": badges.get(m["user_id"]),   # 設定している場合のみ入る
         })
     pending = gym_db.list_pending_for_staff(staff_id)
     return _render(request, "staff_members.html", {
@@ -138,14 +141,23 @@ def reject(request: Request, membership_id: int):
 # ---- 会員詳細 ----
 
 @router.get("/trainer/members/{member_id}", response_class=HTMLResponse)
-def member_detail(request: Request, member_id: str, cm_offset: int = 0):
+def member_detail(request: Request, member_id: str, cm_offset: int = 0,
+                  offset: int = 0):
     staff_id = _require_staff(request)
     _require_member_access(staff_id, member_id)
     u = gym_db.get_user(member_id) or {}
     today = today_jst_date().isoformat()
+    off = max(0, min(int(offset), periods.MAX_OFFSET))
+    nav = periods.period_nav(
+        periods.PAGE_DAYS, off,
+        base_path=f"/trainer/members/{member_id}",
+        extra=f"cm_offset={max(0, cm_offset)}")
     return _render(request, "staff_member_detail.html", {
         "request": request,
         "member_id": member_id,
+        "nav": nav,
+        "offset": off,
+        "goal": goals.goal_badge(member_id),
         "member_name": u.get("display_name") or member_id,
         "summary": fetch_day_summary(member_id, today),
         "entries": fetch_recent_entries(member_id, limit=30),
@@ -182,26 +194,12 @@ def post_comment(request: Request, member_id: str,
 # ---- グラフ用JSON ----
 
 @router.get("/api/trainer/members/{member_id}/summary")
-def member_summary_api(request: Request, member_id: str, days: int = 14):
+def member_summary_api(request: Request, member_id: str, days: int = 14,
+                       offset: int = 0):
+    """会員画面(/api/me/summary)と同一ロジックのグラフ用JSON."""
     staff_id = _require_staff(request)
     _require_member_access(staff_id, member_id)
-    days = max(1, min(days, 90))
-    labels, intake, burn, pfc = [], [], [], []
-    today = today_jst_date()
-    for i in range(days - 1, -1, -1):
-        d = (today - timedelta(days=i)).isoformat()
-        s = fetch_day_summary(member_id, d)
-        labels.append(d[5:])  # MM-DD
-        intake.append(s.get("intake_kcal") or 0)
-        burn.append(s.get("burn_kcal") or s.get("burn") or 0)
-        pfc.append((s.get("protein_g"), s.get("fat_g"), s.get("carb_g")))
-    wseries = fetch_weight_series(member_id, days=days) or []
-    return {
-        "labels": labels, "intake": intake, "burn": burn,
-        "weight_labels": [(w.get("date") or "")[5:] for w in wseries],
-        "weight": [w.get("weight_kg") for w in wseries],
-        **pfc_percent_series(pfc),
-    }
+    return periods.build_summary(member_id, days=days, offset=offset)
 
 
 # ================= ジム管理者画面 (Phase 5) =================
@@ -227,6 +225,7 @@ def _require_gym_admin(request: Request, gym_id: int = 0):
 def gym_home(request: Request, gym_id: int = 0, mine: int = 0):
     uid, gid = _require_gym_admin(request, gym_id)
     gym = gym_db.get_gym(gid) or {}
+    _members = gym_db.list_members_for_gym_filtered(gid, uid if mine else None)
     return _render(request, "gym_admin.html", {
         "request": request,
         "me": uid,
@@ -235,8 +234,10 @@ def gym_home(request: Request, gym_id: int = 0, mine: int = 0):
         "staff": gym_db.list_gym_staff_with_status(gid),
         "trainers": [t for t in gym_db.list_gym_staff_with_status(gid)
                      if t["status"] == "active"],
-        "members": gym_db.list_members_for_gym_filtered(gid, uid if mine else None),
+        "members": _members,
         "member_count": len(gym_db.list_members_for_gym_filtered(gid)),
+        "goal_badges": goals.list_goal_badges(
+            [m["user_id"] for m in _members]),
         "mine": mine,
         "pending": gym_db.list_pending_requests(gid),
         "my_comments": gym_db.list_my_member_comments(uid, limit=30),
@@ -244,6 +245,23 @@ def gym_home(request: Request, gym_id: int = 0, mine: int = 0):
         "unread": gym_db.count_unread_member_comments(uid),
         "threads": gym_db.list_member_threads(uid),
         "unread_list": gym_db.list_unread_member_comments(uid, limit=50),
+    })
+
+
+@router.get("/gym/bi", response_class=HTMLResponse)
+def gym_bi(request: Request, gym_id: int = 0, days: int = 90):
+    """ジム管理のBI（目的の内訳・トレーナーごとの減量実績）."""
+    uid, gid = _require_gym_admin(request, gym_id)
+    if int(days) not in (30, 90, 180):
+        days = 90
+    gym = gym_db.get_gym(gid) or {}
+    return _render(request, "gym_bi.html", {
+        "request": request,
+        "me": uid,
+        "gym": gym,
+        "days": int(days),
+        "dist": bi.goal_distribution(gid),
+        "rep": bi.trainer_loss_report(gid, days=int(days)),
     })
 
 

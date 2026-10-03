@@ -73,6 +73,7 @@ function loadLiffSdk(){return new Promise((res,rej)=>{const s=document.createEle
   .editrow{width:100%}
   .editrow input{margin:2px 0}
 </style>
+<script src="/static/charts.js"></script>
 </head>
 <body>
 <main>
@@ -96,25 +97,22 @@ function loadLiffSdk(){return new Promise((res,rej)=>{const s=document.createEle
     </div>
     <div class="card">
       <b>📊 摂取と消費（目標との比較）</b>
-      <div class="muted" style="margin-top:4px">■摂取　□消費　┆目標摂取カロリー</div>
-      <div id="balBars" style="position:relative;display:grid;grid-template-columns:34px 1fr 78px;gap:6px;align-items:center;margin-top:8px">
+      <div class="muted" style="margin-top:4px">■摂取　□消費　┆目標摂取カロリー（摂取バーの上）</div>
+      <div id="balBars" style="position:relative;display:grid;grid-template-columns:34px 1fr 78px;gap:6px;align-items:center;margin-top:22px">
         <span class="muted" style="font-size:12px">摂取</span>
-        <div style="height:20px;background:var(--line);border-radius:4px;overflow:hidden">
-          <div id="balIntakeBar" style="height:100%;width:0;background:#06c755"></div></div>
+        <div style="position:relative;height:20px;background:var(--line);border-radius:4px;overflow:visible">
+          <div id="balIntakeBar" style="height:100%;width:0;background:#06c755;border-radius:4px"></div>
+          <div id="balGoalLine" style="position:absolute;left:0;top:-6px;bottom:-6px;border-left:2px dashed #ef4444;display:none"></div>
+          <span id="balGoalLabel" style="position:absolute;left:0;top:-16px;transform:translateX(-50%);font-size:10px;color:#ef4444;white-space:nowrap;display:none"></span>
+        </div>
         <span id="balIntakeVal" style="text-align:right;font-size:13px">0 kcal</span>
         <span class="muted" style="font-size:12px">消費</span>
         <div style="height:20px;background:var(--line);border-radius:4px;overflow:hidden">
           <div id="balBurnBar" style="height:100%;width:0;background:repeating-linear-gradient(45deg,#f59e0b,#f59e0b 4px,#fff 4px,#fff 8px);border-right:1px solid #f59e0b"></div></div>
         <span id="balBurnVal" style="text-align:right;font-size:13px">0 kcal</span>
-        <span></span>
-        <div style="position:relative;height:14px">
-          <div id="balGoalLine" style="position:absolute;left:0;top:0;bottom:0;border-left:2px dashed #ef4444"></div>
-          <span id="balGoalLabel" style="position:absolute;left:0;transform:translateX(-50%);font-size:10px;color:#ef4444;white-space:nowrap;line-height:14px"></span>
-        </div>
-        <span></span>
       </div>
-      <div class="pfc-line" style="margin-top:6px">収支（消費−摂取）: <b id="balBalance">—</b>
-        ・ 目標との差: <b id="balDiff">—</b></div>
+      <div class="pfc-line" style="margin-top:6px">収支（摂取−消費）: <b id="balBalance">—</b>
+        ・ 目標との差（目標−消費）: <b id="balDiff">—</b></div>
     </div>
 
     <div class="card">
@@ -189,6 +187,10 @@ const SLOT_PICK = ["breakfast","lunch","dinner","snack"];            // 選択�
 
 function showErr(m){const e=document.getElementById("err");e.textContent=m;e.style.display="block";
   document.getElementById("loading").style.display="none";}
+function signKcal(v){
+  return (window.CalCharts && CalCharts.signedKcal)
+    ? CalCharts.signedKcal(v) : (Math.round(v||0).toLocaleString("ja-JP") + " kcal");
+}
 function fmt(v){return Math.round(v||0);}
 function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,
   c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
@@ -241,7 +243,7 @@ function render(d){
   setT("dIntake", fmt(d.intake_kcal));
   setT("dBurn", fmt(d.burn_kcal));
   setT("dGoal", d.target_kcal ? fmt(d.target_kcal)+" kcal" : "未設定");
-  // ③ 摂取・消費・目標の横バー
+  // ③ 摂取・消費・目標の横バー（目標線は「摂取」バーの上に重ねる）
   {
     const _max = Math.max(d.intake_kcal||0, d.burn_kcal||0, d.target_kcal||0) * 1.15 || 1;
     const _w = v => ((v||0)/_max*100).toFixed(1) + "%";
@@ -250,18 +252,25 @@ function render(d){
     document.getElementById("balIntakeVal").textContent = fmt(d.intake_kcal) + " kcal";
     document.getElementById("balBurnVal").textContent = fmt(d.burn_kcal) + " kcal";
     const _gl = document.getElementById("balGoalLine"), _gt = document.getElementById("balGoalLabel");
-    if (d.target_kcal) { _gl.style.left = _w(d.target_kcal); _gl.style.display="block";
-      _gt.style.left = _w(d.target_kcal); _gt.textContent = "目標 " + fmt(d.target_kcal); }
-    else { _gl.style.display="none"; _gt.textContent = "目標 未設定"; _gt.style.left="0"; }
-    const _bal = (d.burn_kcal||0) - (d.intake_kcal||0);
+    if (d.target_kcal) {
+      _gl.style.left = _w(d.target_kcal); _gl.style.display = "block";
+      _gt.style.left = _w(d.target_kcal); _gt.style.display = "block";
+      _gt.textContent = "目標 " + fmt(d.target_kcal);
+    } else {
+      _gl.style.display = "none"; _gt.style.display = "none";
+    }
+    // 収支 = 摂取 − 消費（下回る場合は「−」表記）
+    const _bal = (d.intake_kcal||0) - (d.burn_kcal||0);
     const _bb = document.getElementById("balBalance");
-    _bb.textContent = (_bal>=0?"+":"") + fmt(_bal) + " kcal";
-    _bb.style.color = _bal>=0 ? "#10b981" : "#ef4444";
+    _bb.textContent = signKcal(_bal);
+    _bb.style.color = _bal >= 0 ? "#10b981" : "#ef4444";
+    // 目標との差 = 目標 − 消費
     const _bd = document.getElementById("balDiff");
-    if (d.target_kcal) { const _df = d.target_kcal - (d.intake_kcal||0);
-      _bd.textContent = (_df>=0?"+":"") + fmt(_df) + " kcal";
-      _bd.style.color = _df>=0 ? "#10b981" : "#ef4444"; }
-    else { _bd.textContent = "—"; }
+    if (d.target_kcal) {
+      const _df = d.target_kcal - (d.burn_kcal||0);
+      _bd.textContent = signKcal(_df);
+      _bd.style.color = _df >= 0 ? "#10b981" : "#ef4444";
+    } else { _bd.textContent = "—"; }
   }
   setT("dP", fmt(d.protein_g));
   setT("dF", fmt(d.fat_g));

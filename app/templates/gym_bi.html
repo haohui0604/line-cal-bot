@@ -1,0 +1,188 @@
+<!doctype html><html lang="ja"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ジムBI</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script src="/static/charts.js"></script>
+<style>
+ :root{--g:#06c755;--bg:#f5f6f8;--line:#e3e5e8;--mut:#8a8f98}
+ body{margin:0;background:var(--bg);font-family:system-ui,-apple-system,"Hiragino Sans",sans-serif;color:#1b1d21}
+ header{background:#1b1d21;color:#fff;padding:14px 18px;display:flex;justify-content:space-between;align-items:center}
+ header a{color:#c9ccd1;text-decoration:none;font-size:13px}
+ main{max-width:1080px;margin:0 auto;padding:18px}
+ .card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:14px}
+ h2{font-size:15px;margin:0 0 10px}
+ .mut{color:var(--mut);font-size:12px}
+ table{width:100%;border-collapse:collapse;font-size:13px}
+ th,td{border-bottom:1px solid var(--line);padding:7px 6px;text-align:left;vertical-align:top}
+ th{color:var(--mut);font-weight:600;font-size:12px}
+ code{background:#f0f2f5;padding:2px 6px;border-radius:6px;font-size:12px}
+ .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+ .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+ @media (max-width:760px){.kpis{grid-template-columns:repeat(2,1fr)}}
+ .kpi{background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px}
+ .kpi .v{font-size:22px;font-weight:700}
+ .pos{color:#10b981;font-weight:700}
+ .neg{color:#ef4444;font-weight:700}
+ .tabs a{display:inline-block;padding:7px 12px;border-radius:8px;text-decoration:none;color:#1b1d21;border:1px solid var(--line);margin-right:6px;background:#fff;font-size:13px}
+ .tabs a.on{background:#1b1d21;color:#fff;border-color:#1b1d21}
+ .chartbox{position:relative;height:240px}
+</style></head><body>
+<header>
+  <b>📊 ジムBI</b>
+  <span class="row">
+    <a href="/gym?gym_id={{ gym.id }}">← ジム管理に戻る</a>
+    <span class="mut" style="color:#c9ccd1">{{ gym.name }}</span>
+  </span>
+</header>
+<main>
+
+<div class="card">
+  <div class="tabs" style="margin-bottom:10px">
+    <a href="/gym?gym_id={{ gym.id }}">ジム管理</a>
+    <a href="/gym/bi?gym_id={{ gym.id }}&days=30" class="{{ 'on' if days == 30 else '' }}">直近30日</a>
+    <a href="/gym/bi?gym_id={{ gym.id }}&days=90" class="{{ 'on' if days == 90 else '' }}">直近90日</a>
+    <a href="/gym/bi?gym_id={{ gym.id }}&days=180" class="{{ 'on' if days == 180 else '' }}">直近180日</a>
+  </div>
+  <div class="kpis">
+    <div class="kpi"><div class="mut">目的を設定している会員</div><div class="v">{{ dist.total }}名</div></div>
+    <div class="kpi"><div class="mut">減量目的の会員</div><div class="v">{{ rep.summary.members }}名</div></div>
+    <div class="kpi"><div class="mut">平均減量（{{ days }}日・実測2点以上）</div>
+      <div class="v {% if rep.summary.avg_loss and rep.summary.avg_loss > 0 %}pos{% endif %}">
+        {% if rep.summary.avg_loss is none %}—{% else %}{{ rep.summary.avg_loss }} kg{% endif %}</div>
+      <div class="mut">対象 {{ rep.summary.measured }}名 / 計測不足 {{ rep.summary.insufficient }}名</div></div>
+    <div class="kpi"><div class="mut">合計減量</div>
+      <div class="v {% if rep.summary.total_loss and rep.summary.total_loss > 0 %}pos{% endif %}">
+        {% if rep.summary.total_loss is none %}—{% else %}{{ rep.summary.total_loss }} kg{% endif %}</div>
+      <div class="mut">減量できた会員 {{ rep.summary.lost }}名</div></div>
+  </div>
+  <p class="mut" style="margin:10px 0 0">減量実績の定義: 期間内の<strong>初回の体重記録 → 最新の体重記録</strong>の差（マイナス＝減量）。
+    平均・合計は実測が2点以上ある会員だけで算出し、1点しかない会員は「計測不足」として除外しています。</p>
+</div>
+
+<div class="card">
+  <h2>目的設定の内訳（設定している会員のみ・百分率）</h2>
+  {% if dist.total %}
+  <div class="row" style="align-items:flex-start;gap:24px">
+    <div class="chartbox" style="width:260px;height:220px"><canvas id="gymBiPie"></canvas></div>
+    <table style="flex:1;min-width:240px">
+      <tr><th>目的</th><th>人数</th><th>割合</th></tr>
+      {% for key, label in [("weight","減量"),("salt","減塩"),("muscle","筋肉")] %}
+      <tr>
+        <td>{{ label }}</td>
+        <td>{{ dist.counts.get(key, 0) }}名</td>
+        <td><b>{{ dist.pct.get(key, 0.0) }}%</b></td>
+      </tr>
+      {% endfor %}
+      <tr><td class="mut">合計（設定済み）</td><td class="mut">{{ dist.total }}名</td><td class="mut">100%</td></tr>
+    </table>
+  </div>
+  {% else %}
+  <p class="mut">目的（減量 / 減塩 / 筋肉）を設定している会員がまだいません。
+    会員がLINEボットで目的を設定すると、ここに内訳が出ます。</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>トレーナーごとの減量実績（減量目的・直近{{ days }}日）</h2>
+  {% if rep.rows %}
+  <table>
+    <tr>
+      <th>トレーナー</th><th>対象会員</th><th>実測2点以上</th><th>減量できた</th>
+      <th>平均減量</th><th>合計減量</th><th>最大減量</th><th>目標進捗(平均)</th><th>計測不足</th>
+    </tr>
+    {% for r in rep.rows %}
+    <tr>
+      <td>{{ r.trainer_name }}{% if not r.trainer_id %}<span class="mut">（未割当）</span>{% endif %}</td>
+      <td>{{ r.members }}名</td>
+      <td>{{ r.measured }}名</td>
+      <td>{{ r.lost }}名</td>
+      <td class="{% if r.avg_loss and r.avg_loss > 0 %}pos{% elif r.avg_loss is not none and r.avg_loss < 0 %}neg{% endif %}">
+        {% if r.avg_loss is none %}—{% else %}{{ r.avg_loss }} kg{% endif %}</td>
+      <td>{% if r.total_loss is none %}—{% else %}{{ r.total_loss }} kg{% endif %}</td>
+      <td>{% if r.best_loss is none %}—{% else %}{{ r.best_loss }} kg{% endif %}</td>
+      <td>{% if r.avg_pct is none %}—{% else %}{{ r.avg_pct }}%{% endif %}</td>
+      <td class="mut">{{ r.insufficient }}名</td>
+    </tr>
+    {% endfor %}
+  </table>
+  <div class="chartbox" style="height:220px;margin-top:14px"><canvas id="gymBiBar"></canvas></div>
+  <p class="mut">「平均減量」はプラスが減量できたことを表します（例: 2.0 kg ＝ 平均2kg減）。
+    「目標進捗」は（初回 − 最新）÷（初回 − 目標体重）で、100%に近いほど目標達成に近い状態です。</p>
+  {% else %}
+  <p class="mut">減量目的の会員がまだいません。会員が目的を「減量」に設定すると集計されます。</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>会員ごとの体重推移（減量目的・直近{{ days }}日）</h2>
+  {% if rep.details %}
+  <table>
+    <tr><th>会員</th><th>担当トレーナー</th><th>初回</th><th>最新</th><th>増減</th><th>目標体重</th><th>目標進捗</th><th>計測</th></tr>
+    {% for d in rep.details %}
+    <tr>
+      <td>{{ d.member_name }}<div class="mut">{{ d.user_id }}</div></td>
+      <td>{{ d.trainer_name }}</td>
+      <td class="mut">{% if d.first is none %}—{% else %}{{ d.first }} kg<div>{{ d.first_date }}</div>{% endif %}</td>
+      <td class="mut">{% if d.latest is none %}—{% else %}{{ d.latest }} kg<div>{{ d.latest_date }}</div>{% endif %}</td>
+      <td class="{% if d.delta is not none and d.delta < 0 %}pos{% elif d.delta is not none and d.delta > 0 %}neg{% endif %}">
+        {% if d.delta is none %}—{% else %}{{ "+" if d.delta > 0 else ("−" if d.delta < 0 else "±") }}{{ d.delta | abs }} kg{% endif %}</td>
+      <td>{% if d.target_weight %}目標 {{ d.target_weight }} kg{% else %}<span class="mut">—</span>{% endif %}</td>
+      <td>{% if d.pct_to_goal is none %}—{% else %}{{ d.pct_to_goal }}%{% endif %}</td>
+      <td class="mut">{{ d.points }}点{% if d.points < 2 %}<div>計測不足</div>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="mut">該当する会員がいません。</p>
+  {% endif %}
+</div>
+
+</main>
+<script>
+const BI = {
+  dist: {{ dist | tojson }},
+  rows: {{ rep.rows | tojson }},
+  days: {{ days }}
+};
+(function () {
+  const pie = document.getElementById("gymBiPie");
+  if (pie && BI.dist.total) {
+    const order = ["weight", "salt", "muscle"];
+    const labels = order.map(function (k) { return BI.dist.labels[k] || k; });
+    const data = order.map(function (k) { return BI.dist.counts[k] || 0; });
+    const pct = order.map(function (k) { return BI.dist.pct[k] || 0; });
+    new Chart(pie, {
+      type: "doughnut",
+      data: {
+        labels: labels.map(function (l, i) { return l + " " + pct[i] + "%"; }),
+        datasets: [{ data: data, backgroundColor: ["#06c755", "#f59e0b", "#3b82f6"] }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false, cutout: "52%",
+        plugins: { legend: { position: "bottom", labels: { boxWidth: 12, font: { size: 11 } } } }
+      }
+    });
+  }
+  const bar = document.getElementById("gymBiBar");
+  const rows = (BI.rows || []).filter(function (r) { return r.avg_loss !== null; });
+  if (bar && rows.length) {
+    new Chart(bar, {
+      type: "bar",
+      data: {
+        labels: rows.map(function (r) { return r.trainer_name; }),
+        datasets: [{
+          label: "平均減量 (kg) / 直近" + BI.days + "日",
+          data: rows.map(function (r) { return r.avg_loss; }),
+          backgroundColor: "#06c75588", borderColor: "#06c755", borderWidth: 1
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { labels: { boxWidth: 12, font: { size: 11 } } } },
+        scales: { y: { title: { display: true, text: "平均減量 (kg)" } } }
+      }
+    });
+  }
+})();
+</script>
+</body></html>

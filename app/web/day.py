@@ -74,6 +74,25 @@ def _push_to_member(member_id: str, text: str) -> None:
 
 # ---- ページ ----
 
+def _render(request, name: str, ctx: dict = None):
+    """Starlette の新旧どちらの TemplateResponse シグネチャでも描画する.
+
+    新しい Starlette は TemplateResponse(request, name, context) の順なので、
+    旧来の ("name", {...}) 呼び出しは name に dict が入り
+    "unhashable type: 'dict'" で 500 になる。
+    """
+    import inspect
+    ctx = dict(ctx or {})
+    ctx.setdefault("request", request)
+    try:
+        params = list(inspect.signature(templates.TemplateResponse).parameters)
+    except (TypeError, ValueError):
+        params = []
+    if params[:2] == ["request", "name"]:
+        return templates.TemplateResponse(request, name, ctx)
+    return templates.TemplateResponse(name, ctx)
+
+
 @router.get("/day", response_class=HTMLResponse)
 def day_page(request: Request, member_id: str = "", date: str = ""):
     if member_id:
@@ -88,7 +107,7 @@ def day_page(request: Request, member_id: str = "", date: str = ""):
         can_comment = False
     # トレーナーは閲覧とコメントのみ。記録の追加/修正/削除は会員本人だけ
     can_edit = not bool(member_id)
-    return templates.TemplateResponse("day_detail.html", {
+    return _render(request, "day_detail.html", {
         "request": request,
         "member_id": member_id or None,
         "can_comment": can_comment,

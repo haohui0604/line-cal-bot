@@ -48,6 +48,14 @@
 </div>
 
 <div class="card">
+  <h2>BI（分析）</h2>
+  <div class="row">
+    <a href="/gym/bi?gym_id={{ gym.id }}&days=90" style="text-decoration:none"><button>📊 ジムBIを開く</button></a>
+    <span class="mut">目的の内訳（百分率）・トレーナーごとの減量実績・会員ごとの体重推移</span>
+  </div>
+</div>
+
+<div class="card">
   <h2>トレーナー（{{ staff|length }}名）</h2>
   <div class="row" style="margin-bottom:10px">
     <button onclick="inviteTrainer(this)">トレーナーを招待</button>
@@ -97,10 +105,14 @@
     <a href="/gym?gym_id={{ gym.id }}&mine=1" class="{{ 'on' if mine else '' }}">自分の担当のみ</a>
   </div>
   <table>
-    <tr><th>名前</th><th>担当トレーナー</th><th>変更</th><th>操作</th></tr>
+    <tr><th>名前</th><th>目的</th><th>担当トレーナー</th><th>変更</th><th>操作</th></tr>
     {% for m in members %}
     <tr>
       <td>{{ m.display_name or "(未設定)" }}<div class="mut">{{ m.user_id }}</div></td>
+      <td>{% set gb = goal_badges.get(m.user_id) %}
+        {% if gb %}<span class="badge badge-green">{{ gb.label }}</span>
+        {% if gb.detail %}<div class="mut">{{ gb.detail }}</div>{% endif %}
+        {% else %}<span class="mut">—</span>{% endif %}</td>
       <td>{{ m.trainer_name or "—" }}</td>
       <td>
         <select id="tr{{ m.membership_id }}">
@@ -117,7 +129,7 @@
     </tr>
     {% endfor %}
     {% if not members %}
-    <tr><td colspan="4" class="mut">該当する会員がいません。</td></tr>
+    <tr><td colspan="5" class="mut">該当する会員がいません。</td></tr>
     {% endif %}
   </table>
   <p class="mut">同一ジムのスタッフは会員データを閲覧できます。会員詳細・コメントは「トレーナー画面」から開けます。</p>

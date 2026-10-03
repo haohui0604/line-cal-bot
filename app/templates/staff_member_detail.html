@@ -2,6 +2,7 @@
 {% block title %}{{ member_name }} の記録{% endblock %}
 {% block head %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script src="/static/charts.js"></script>
 <style>
   .tabs{display:flex;gap:8px;margin:14px 0}
   .tabs button{flex:1;padding:10px;border:1px solid var(--line);background:#fff;
@@ -12,6 +13,21 @@
 {% block content %}
 <p><a href="/trainer" class="muted">← 担当会員一覧に戻る</a></p>
 <h2>{{ member_name }}</h2>
+<div class="card" style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+  <span id="pgRange" class="muted" style="font-size:13px">{{ nav.range if nav else "" }}</span>
+  <span>
+    {% if nav and nav.show_future %}
+    <a id="pgFuture" href="{{ nav.future_href }}" style="text-decoration:none;font-weight:700;font-size:15px">未来 ＞</a>
+    {% else %}<span style="width:64px;display:inline-block"></span>{% endif %}
+    {% if nav and nav.show_past %}
+    <a id="pgPast" href="{{ nav.past_href }}" style="text-decoration:none;font-weight:700;font-size:15px">＜ 過去</a>
+    {% else %}<span style="width:64px;display:inline-block"></span>{% endif %}
+  </span>
+</div>
+{% if goal %}
+<div class="card"><span class="badge badge-green">目的: {{ goal.label }}</span>
+  {% if goal.detail %}<span class="muted">　{{ goal.detail }}</span>{% endif %}</div>
+{% endif %}
 
 {# === 会員画面(/me)と同じ構成: 今日の収支 → 日別ボタン → 推移3枚 → タブ === #}
 <div class="card">
@@ -37,6 +53,13 @@
 </div>
 <div class="card">
   <b>⚖️ 体重推移（14日）</b>
+  <div class="pfc-line" style="margin-top:4px">
+    現在の体重: <b id="wCurrent">—</b>
+    <span class="muted" id="wCurrentDate"></span>
+    　／　増減（期間初日比）: <b id="wDelta">—</b>
+    <span class="muted" id="wBaseDate"></span>
+    <span id="wTargetWrap" style="display:none">　／　目標体重: <b id="wTarget">—</b></span>
+  </div>
   <canvas id="weightChart" height="130"></canvas>
 </div>
 <div class="card">
@@ -112,35 +135,13 @@
 
 <script>
 (async () => {
-  const res = await fetch("/api/trainer/members/{{ member_id }}/summary?days=14");
+  const res = await fetch("/api/trainer/members/{{ member_id }}/summary?days=14&offset={{ offset }}");
   if (res.ok) {
     const d = await res.json();
-    new Chart(document.getElementById("calChart"), {
-      data: { labels: d.labels, datasets: [
-        { type: "bar", label: "摂取 kcal", data: d.intake,
-          backgroundColor: "#06c75566", borderColor: "#06c755", borderWidth: 1 },
-        { type: "bar", label: "消費 kcal", data: d.burn,
-          backgroundColor: "#f59e0b66", borderColor: "#f59e0b", borderWidth: 1 }
-      ]},
-      options: { responsive: true, interaction: { mode: "index" } }
-    });
-    // 体重: データの min-10% 〜 max+10% に絞って変動を見やすくする
-    const wvals = (d.weight || []).filter(v => v != null);
-    let wopts = { responsive: true };
-    if (wvals.length) {
-      const wmin = Math.min(...wvals), wmax = Math.max(...wvals);
-      const pad = (wmax - wmin) * 0.1 || wmax * 0.02;
-      wopts.scales = { y: { min: +(wmin - pad).toFixed(1),
-                            max: +(wmax + pad).toFixed(1) } };
-    }
-    new Chart(document.getElementById("weightChart"), {
-      type: "line",
-      data: { labels: d.weight_labels, datasets: [
-        { label: "体重 kg", data: d.weight,
-          borderColor: "#3b82f6", tension: .3, pointRadius: 2, spanGaps: true }
-      ]},
-      options: wopts
-    });
+    CalCharts.calorie(document.getElementById("calChart"), d);
+    CalCharts.weight(document.getElementById("weightChart"), d);
+    CalCharts.weightText({}, d);
+
     new Chart(document.getElementById("pfcChart"), {
       type: "bar",
       data: { labels: d.labels, datasets: [

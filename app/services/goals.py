@@ -60,6 +60,67 @@ def get_profile(user_id: str) -> Optional[dict]:
     return dict(r) if r else None
 
 
+GOAL_JP = {"weight": "減量", "salt": "減塩", "muscle": "筋肉"}
+
+
+def _badge_from_row(p: Optional[dict]):
+    """goal_profiles の1行から一覧表示用バッジを作る（未設定なら None）."""
+    if not p:
+        return None
+    mode = p.get("goal_mode")
+    if mode not in GOAL_JP:
+        return None
+    detail = ""
+    if mode == "weight":
+        tw, gd = p.get("target_weight_kg"), p.get("goal_days")
+        if tw and gd:
+            detail = f"{float(tw):.1f}kg / {int(gd)}日"
+        elif tw:
+            detail = f"{float(tw):.1f}kg"
+    elif mode == "salt":
+        try:
+            detail = f"{float(p.get('salt_target_g') or DEFAULT_SALT_G):.1f}g/日"
+        except (TypeError, ValueError):
+            detail = ""
+    elif mode == "muscle":
+        pt = p.get("protein_target_g")
+        try:
+            detail = f"P{float(pt):.0f}g/日" if pt else ""
+        except (TypeError, ValueError):
+            detail = ""
+    return {"mode": mode, "label": GOAL_JP[mode], "detail": detail}
+
+
+def goal_badge(user_id: str):
+    """1会員の目的バッジ。設定していなければ None（一覧では「—」表示）."""
+    try:
+        return _badge_from_row(get_profile(user_id))
+    except Exception:
+        return None
+
+
+def list_goal_badges(user_ids) -> dict:
+    """複数会員ぶんの目的バッジをまとめて返す（未設定の会員は含めない）."""
+    ids = [u for u in (user_ids or []) if u]
+    if not ids:
+        return {}
+    out = {}
+    try:
+        with get_conn() as c:
+            q = ",".join("?" for _ in ids)
+            rows = c.execute(
+                f"SELECT * FROM goal_profiles WHERE user_id IN ({q})", ids
+            ).fetchall()
+    except Exception:
+        return {}
+    for r in rows:
+        d = dict(r)
+        b = _badge_from_row(d)
+        if b:
+            out[d["user_id"]] = b
+    return out
+
+
 def context_line(user_id: str) -> str:
     """コメント生成のコンテキストに載せる1行。未設定なら空文字.
 
