@@ -87,6 +87,17 @@ def get_conn():
 ADDED_COLUMNS = {
     # 目標PFCのマスタ（たんぱく質は 008、脂質・炭水化物を後から追加）
     "goal_profiles": {"fat_target_g": "REAL", "carb_target_g": "REAL"},
+    # --- システム管理 (010) ---
+    "system_admins": {"created_by": "TEXT"},
+    # ジムの論理削除（履歴は残す）
+    "gyms": {"deleted_at": "TEXT", "deleted_by": "TEXT"},
+    # 除籍・担当解除の記録
+    "memberships": {"removed_by": "TEXT", "removed_at": "TEXT",
+                    "removed_reason": "TEXT"},
+    # コメントのスレッド化（ユーザ返信→担当トレーナー通知）
+    "comments": {"reply_to_id": "INTEGER", "notified_at": "TEXT"},
+    # 招待コードの用途（trainer / gym_admin）
+    "trainer_invites": {"role": "TEXT DEFAULT 'trainer'"},
 }
 
 

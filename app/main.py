@@ -37,6 +37,10 @@ app.include_router(member_router)
 from app.web.day import router as day_router
 app.include_router(day_router)
 
+# システム管理者画面 (Phase 4)
+from app.web.admin import router as admin_router
+app.include_router(admin_router)
+
 line_bot_api = LineBotApi(settings.LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(settings.LINE_CHANNEL_SECRET)
 
@@ -45,6 +49,9 @@ handler = WebhookHandler(settings.LINE_CHANNEL_SECRET)
 async def _startup():
     init_db()
     logger.info("DB initialized at %s", settings.DB_PATH)
+    # ADMIN_USER_IDS を system_admins テーブルへ取り込む（冪等）
+    from app.services import admin_db
+    admin_db.bootstrap_env_admins()
     # 無料枠のスリープ対策（BASE_URL が https のときだけ動く）
     start_keepalive()
 

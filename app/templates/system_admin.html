@@ -1,0 +1,173 @@
+<!doctype html><html lang="ja"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>システム管理</title>
+<style>
+ :root{--g:#06c755;--bg:#f5f6f8;--line:#e3e5e8;--mut:#8a8f98}
+ body{margin:0;background:var(--bg);font-family:system-ui,-apple-system,"Hiragino Sans",sans-serif;color:#1b1d21}
+ header{background:#1b1d21;color:#fff;padding:14px 18px;display:flex;justify-content:space-between;align-items:center}
+ header b{font-size:16px}
+ main{max-width:1080px;margin:0 auto;padding:18px}
+ .card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:14px}
+ h2{font-size:15px;margin:0 0 10px}
+ .mut{color:var(--mut);font-size:12px}
+ table{width:100%;border-collapse:collapse;font-size:13px}
+ th,td{border-bottom:1px solid var(--line);padding:7px 6px;text-align:left;vertical-align:top}
+ th{color:var(--mut);font-weight:600;font-size:12px}
+ .kpi{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+ .kpi div{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px}
+ .kpi b{display:block;font-size:22px}
+ input,button{font:inherit;padding:8px 10px;border-radius:8px;border:1px solid var(--line)}
+ button{background:var(--g);color:#fff;border:none;cursor:pointer}
+ button.warn{background:#e5484d}
+ button.ghost{background:#fff;color:#1b1d21;border:1px solid var(--line)}
+ code{background:#f0f2f5;padding:2px 6px;border-radius:6px;font-size:12px}
+ .del{color:#b0b4bb;text-decoration:line-through}
+ .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+</style></head><body>
+<header><b>システム管理</b><span class="mut">{{ me }}</span></header>
+<main>
+
+<div class="card">
+  <h2>運営KPI</h2>
+  <div class="kpi">
+    <div><span class="mut">ジム（有効/全体）</span><b>{{ analytics.gyms_active }} / {{ analytics.gyms_total }}</b></div>
+    <div><span class="mut">会員（有効）</span><b>{{ analytics.members_active }}</b></div>
+    <div><span class="mut">トレーナー（有効）</span><b>{{ analytics.trainers_active }}</b></div>
+    <div><span class="mut">ジム管理者（有効）</span><b>{{ analytics.admins_active }}</b></div>
+    <div><span class="mut">入会申請（未処理）</span><b>{{ analytics.pending_requests }}</b></div>
+    <div><span class="mut">登録ユーザー数</span><b>{{ analytics.users_total }}</b></div>
+    <div><span class="mut">食事記録 7日</span><b>{{ analytics.meals_7d if analytics.meals_7d is not none else "—" }}</b></div>
+    <div><span class="mut">食事記録 30日</span><b>{{ analytics.meals_30d if analytics.meals_30d is not none else "—" }}</b></div>
+    <div><span class="mut">記録した人 7日</span><b>{{ analytics.active_users_7d if analytics.active_users_7d is not none else "—" }}</b></div>
+    <div><span class="mut">コメント 30日</span><b>{{ analytics.comments_30d if analytics.comments_30d is not none else "—" }}</b></div>
+  </div>
+  {% if analytics.gyms_needing_attention %}
+  <p class="mut" style="margin-top:12px">要フォロー（会員0 or トレーナー0）:
+    {% for g in analytics.gyms_needing_attention %}{{ g.name }}（会員{{ g.members}}/トレーナー{{ g.trainers }}）{% if not loop.last %}、{% endif %}{% endfor %}
+  </p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>ジムを作成</h2>
+  <div class="row">
+    <input id="gymName" placeholder="ジム名（例: 新宿パーソナル）" style="min-width:260px">
+    <button onclick="createGym()">作成</button>
+    <span class="mut">作成後に「管理者招待」で GA- コードを発行し、相手に伝えてください。</span>
+  </div>
+</div>
+
+<div class="card">
+  <h2>ジム一覧</h2>
+  <table>
+    <tr><th>ID</th><th>ジム名</th><th>入会コード</th><th>会員</th><th>トレーナー</th><th>管理者</th><th>操作</th></tr>
+    {% for g in gyms %}
+    <tr>
+      <td>{{ g.id }}</td>
+      <td class="{{ 'del' if g.deleted_at else '' }}">{{ g.name }}{% if g.deleted_at %} <span class="mut">(削除済)</span>{% endif %}</td>
+      <td><code>{{ g.join_code }}</code></td>
+      <td>{{ g.members }}</td><td>{{ g.trainers }}</td><td>{{ g.admins }}</td>
+      <td>
+        {% if not g.deleted_at %}
+        <button class="ghost" onclick="inviteAdmin({{ g.id }})">管理者招待</button>
+        <button class="ghost" onclick="loadStaff({{ g.id }})">スタッフ表示</button>
+        <button class="warn" onclick="delGym({{ g.id }}, '{{ g.name }}')">削除</button>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  <div id="staffBox" style="margin-top:12px"></div>
+</div>
+
+<div class="card">
+  <h2>システム管理者</h2>
+  <table>
+    <tr><th>LINE user ID</th><th>メモ</th><th>追加元</th><th>追加日</th><th></th></tr>
+    {% for a in admins %}
+    <tr>
+      <td><code>{{ a.user_id }}</code>{% if a.user_id in env_admins %} <span class="mut">(env)</span>{% endif %}</td>
+      <td>{{ a.note or "" }}</td><td>{{ a.created_by or "" }}</td><td class="mut">{{ a.created_at or "" }}</td>
+      <td><button class="warn" onclick="rmAdmin('{{ a.user_id }}')">解除</button></td>
+    </tr>
+    {% endfor %}
+  </table>
+  <div class="row" style="margin-top:10px">
+    <input id="newAdmin" placeholder="追加する LINE user ID（U で始まる33文字）" style="min-width:320px">
+    <input id="newAdminNote" placeholder="メモ（任意）">
+    <button onclick="addAdmin()">追加</button>
+  </div>
+  <p class="mut">最後の1人は解除できません。環境変数 <code>ADMIN_USER_IDS</code> の分は起動時に自動で取り込まれます。</p>
+</div>
+
+<div class="card">
+  <h2>監査ログ（最新30件）</h2>
+  <table>
+    <tr><th>日時</th><th>実行者</th><th>操作</th><th>対象</th><th>内容</th></tr>
+    {% for l in audit %}
+    <tr><td class="mut">{{ l.created_at }}</td><td><code>{{ l.actor_user_id }}</code></td>
+        <td>{{ l.action }}</td><td>{{ l.target_type or "" }} {{ l.target_id or "" }}</td>
+        <td class="mut">{{ l.detail or "" }}</td></tr>
+    {% endfor %}
+  </table>
+</div>
+
+<p class="mut">操作API: <code>POST /api/system/gym/create</code> / <code>gym/delete</code> /
+<code>gym/admin/invite</code> / <code>gym/admin/remove</code> /
+<code>system-admin/invite</code> / <code>system-admin/remove</code> /
+<code>GET /api/system/analytics</code></p>
+
+</main>
+<script>
+async function post(path, body){
+  const r = await fetch(path, {method:"POST", headers:{"Content-Type":"application/json"},
+                               body: JSON.stringify(body||{})});
+  const j = await r.json().catch(()=>({}));
+  if(!r.ok){ alert(j.detail || ("失敗しました ("+r.status+")")); return null; }
+  return j;
+}
+async function createGym(){
+  const name = document.getElementById("gymName").value.trim();
+  if(!name) return alert("ジム名を入力してください");
+  const j = await post("/api/system/gym/create", {name});
+  if(j){ alert("作成しました: "+j.name+"\n入会コード: "+j.join_code); location.reload(); }
+}
+async function delGym(id, name){
+  if(!confirm(name+" を削除します。\n所属メンバーの担当トレーナーは空欄になり、記録は残ります。")) return;
+  const j = await post("/api/system/gym/delete", {gym_id:id, reason:"system_admin"});
+  if(j) location.reload();
+}
+async function inviteAdmin(id){
+  const j = await post("/api/system/gym/admin/invite", {gym_id:id});
+  if(j) alert("ジム管理者の招待コード: "+j.code+"\n（7日間有効）");
+}
+async function loadStaff(id){
+  const r = await fetch("/api/system/gym/"+id+"/staff");
+  const j = await r.json();
+  let h = "<table><tr><th>membership</th><th>user</th><th>役割</th><th>状態</th><th></th></tr>";
+  (j.staff||[]).forEach(s=>{
+    h += "<tr><td>"+s.id+"</td><td><code>"+s.user_id+"</code> "+(s.display_name||"")+
+         "</td><td>"+s.role+"</td><td>"+s.status+"</td><td>"+
+         (s.status==="active" ? "<button class='warn' onclick=\\"rmMember("+s.id+")\\">解除</button>" : "")+
+         "</td></tr>";
+  });
+  document.getElementById("staffBox").innerHTML = h+"</table>";
+}
+async function rmMember(id){
+  if(!confirm("このスタッフを解除しますか？（担当メンバーは先に移管してください）")) return;
+  const j = await post("/api/system/gym/admin/remove", {membership_id:id});
+  if(j) location.reload();
+}
+async function addAdmin(){
+  const uid = document.getElementById("newAdmin").value.trim();
+  if(!uid) return alert("user ID を入力してください");
+  const j = await post("/api/system/system-admin/invite",
+                       {user_id:uid, note:document.getElementById("newAdminNote").value.trim()});
+  if(j) location.reload();
+}
+async function rmAdmin(uid){
+  if(!confirm(uid+" をシステム管理者から解除しますか？")) return;
+  const j = await post("/api/system/system-admin/remove", {user_id:uid});
+  if(j) location.reload();
+}
+</script></body></html>

@@ -1,0 +1,140 @@
+"""システム管理者画面 (Phase 4).
+
+- GET  /system                        … ダッシュボード（システム管理者のみ）
+- POST /api/system/gym/create         … ジム作成
+- POST /api/system/gym/delete         … ジム論理削除（担当トレーナーは空欄に）
+- POST /api/system/gym/admin/invite   … ジム管理者の招待コード発行
+- POST /api/system/gym/admin/remove   … ジム管理者の解除
+- POST /api/system/system-admin/invite / remove … システム管理者の増減
+- GET  /api/system/gym/{id}/staff     … 当該ジムのスタッフ一覧
+- GET  /api/system/analytics          … 運営KPI
+
+認証は「環境変数 ADMIN_USER_IDS」または「system_admins テーブル」。
+"""
+import logging
+from pathlib import Path
+
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.templating import Jinja2Templates
+
+from app import auth
+from app.config import settings
+from app.services import admin_db
+
+logger = logging.getLogger(__name__)
+router = APIRouter()
+templates = Jinja2Templates(
+    directory=str(Path(__file__).resolve().parent.parent / "templates"))
+
+
+def _require_system_admin(request: Request) -> str:
+    uid = auth.current_user_id(request)
+    if not uid:
+        raise HTTPException(status_code=401, detail="ログインが必要です")
+    if not admin_db.is_system_admin(uid):
+        raise HTTPException(status_code=403, detail="システム管理者のみアクセスできます")
+    return uid
+
+
+@router.get("/system", response_class=HTMLResponse)
+def system_home(request: Request):
+    uid = auth.current_user_id(request)
+    if not uid or not admin_db.is_system_admin(uid):
+        return RedirectResponse("/login")
+    ctx = {
+        "request": request,
+        "me": uid,
+        "gyms": admin_db.list_gyms(),
+        "admins": admin_db.list_system_admins(),
+        "env_admins": sorted(settings.admin_user_id_set),
+        "audit": admin_db.list_audit(30),
+        "analytics": admin_db.analytics(),
+    }
+    try:  # Starlette 0.29+ は (request, name, context)
+        return templates.TemplateResponse(
+            request=request, name="system_admin.html", context=ctx)
+    except TypeError:  # 旧シグネチャ
+        return templates.TemplateResponse("system_admin.html", ctx)
+
+
+@router.get("/api/system/analytics")
+def api_analytics(request: Request):
+    _require_system_admin(request)
+    return admin_db.analytics()
+
+
+@router.post("/api/system/gym/create")
+def api_gym_create(request: Request, body: dict):
+    uid = _require_system_admin(request)
+    name = (body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="ジム名を入力してください")
+    g = admin_db.create_gym(name,
+                            owner_user_id=(body.get("owner_user_id") or uid))
+    admin_db.add_audit(uid, "gym.create", "gym", str(g["id"]), name)
+    return g
+
+
+@router.post("/api/system/gym/delete")
+def api_gym_delete(request: Request, body: dict):
+    uid = _require_system_admin(request)
+    gid = int(body.get("gym_id") or 0)
+    if not gid:
+        raise HTTPException(status_code=400, detail="gym_id が必要です")
+    reason = body.get("reason") or ""
+    ok = admin_db.soft_delete_gym(gid, uid, reason)
+    admin_db.add_audit(uid, "gym.delete", "gym", str(gid), reason)
+    return {"ok": ok}
+
+
+@router.post("/api/system/gym/admin/invite")
+def api_gym_admin_invite(request: Request, body: dict):
+    uid = _require_system_admin(request)
+    gid = int(body.get("gym_id") or 0)
+    if not gid:
+        raise HTTPException(status_code=400, detail="gym_id が必要です")
+    code = admin_db.create_invite(gid, uid, role="gym_admin")
+    admin_db.add_audit(uid, "gym.admin.invite", "gym", str(gid), code)
+    return {"code": code, "role": "gym_admin"}
+
+
+@router.post("/api/system/gym/admin/remove")
+def api_gym_admin_remove(request: Request, body: dict):
+    uid = _require_system_admin(request)
+    mid = int(body.get("membership_id") or 0)
+    if not mid:
+        raise HTTPException(status_code=400, detail="membership_id が必要です")
+    ok = admin_db.remove_membership(mid, uid, body.get("reason") or "")
+    admin_db.add_audit(uid, "gym.admin.remove", "membership", str(mid))
+    return {"ok": ok}
+
+
+@router.post("/api/system/system-admin/invite")
+def api_system_admin_invite(request: Request, body: dict):
+    uid = _require_system_admin(request)
+    target = (body.get("user_id") or "").strip()
+    if not target:
+        raise HTTPException(status_code=400, detail="user_id が必要です")
+    admin_db.add_system_admin(target, body.get("note") or "", created_by=uid)
+    admin_db.add_audit(uid, "system_admin.add", "user", target)
+    return {"ok": True, "user_id": target}
+
+
+@router.post("/api/system/system-admin/remove")
+def api_system_admin_remove(request: Request, body: dict):
+    uid = _require_system_admin(request)
+    target = (body.get("user_id") or "").strip()
+    if not target:
+        raise HTTPException(status_code=400, detail="user_id が必要です")
+    if not admin_db.remove_system_admin(target):
+        raise HTTPException(status_code=400,
+                            detail="最後のシステム管理者は削除できません")
+    admin_db.add_audit(uid, "system_admin.remove", "user", target)
+    return {"ok": True}
+
+
+@router.get("/api/system/gym/{gym_id}/staff")
+def api_gym_staff(request: Request, gym_id: int):
+    _require_system_admin(request)
+    return {"staff": admin_db.list_gym_staff(gym_id)}
