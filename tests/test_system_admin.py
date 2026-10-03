@@ -111,7 +111,13 @@ def test_create_and_soft_delete_gym_clears_trainer():
     with db.get_conn() as c:
         row = c.execute("SELECT status, trainer_id, removed_reason FROM memberships "
                         "WHERE gym_id=? AND user_id='Um'", (g["id"],)).fetchone()
-    assert row[0] == "left" and row[1] is None and row[2] == "test"
+    assert row[0] == "left" and row[2] == "test"
+    # 担当IDは「復元できるように」保持し、有効な担当としては扱わない
+    assert row[1] == "Utr"
+    with db.get_conn() as c:
+        active = c.execute("SELECT COUNT(*) AS n FROM memberships "
+                           "WHERE gym_id=? AND status='active'", (g["id"],)).fetchone()["n"]
+    assert active == 0
 
 
 def test_invite_role_prefix():
@@ -221,3 +227,69 @@ def test_page_script_parses_with_node_if_available():
     p.write_text(_script_of(_admin_html()), encoding="utf-8")
     r = subprocess.run([node, "--check", str(p)], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
+
+
+def test_create_gym_when_table_missing_self_heals(tmp_path, monkeypatch):
+    """gyms が無い環境でも 500 にならず作成できること（隔離DBで検証）."""
+    monkeypatch.setattr(db.settings, "DB_PATH", str(tmp_path / "iso.db"))
+    db.init_db()
+    with db.get_conn() as c:
+        c.execute("DROP TABLE IF EXISTS gyms")
+    g = admin_db.create_gym("自己修復テスト")      # 例外にならない
+    assert g["id"] and g["join_code"].startswith("GYM-")
+    with db.get_conn() as c:
+        assert c.execute("SELECT COUNT(*) AS n FROM gyms").fetchone()["n"] >= 1
+    monkeypatch.undo()
+    db.init_db()
+
+
+def test_restore_gym_reactivates_members():
+    db.init_db()
+    from app.services.db import get_conn
+    g = admin_db.create_gym("復元テスト")
+    with get_conn() as c:
+        c.execute("INSERT INTO users (line_user_id, display_name) VALUES ('Ur','会員')")
+        c.execute("""INSERT INTO memberships (gym_id, user_id, role, status, trainer_id)
+                     VALUES (?, 'Ur', 'member', 'active', 'Utr')""", (g["id"],))
+    admin_db.soft_delete_gym(g["id"], "Uroot", "test")
+    with get_conn() as c:
+        row = c.execute("SELECT status, trainer_id FROM memberships WHERE gym_id=?",
+                        (g["id"],)).fetchone()
+    assert row["status"] == "left" and row["trainer_id"] == "Utr"   # 担当は消さない
+    assert admin_db.restore_gym(g["id"], "Uroot") is True
+    with get_conn() as c:
+        row = c.execute("SELECT status, trainer_id FROM memberships WHERE gym_id=?",
+                        (g["id"],)).fetchone()
+    assert row["status"] == "active" and row["trainer_id"] == "Utr"
+
+
+def test_count_active_gyms():
+    db.init_db()
+    n = admin_db.count_active_gyms()
+    assert isinstance(n, int) and n >= 0
+
+
+def test_e2e_create_delete_recreate_returns_200():
+    """作成→招待→削除→再作成→復元 がすべて 200（500の再発防止）."""
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app import auth as _auth
+    old = settings.ADMIN_USER_IDS
+    settings.ADMIN_USER_IDS = "Ue2e"
+    try:
+        db.init_db()
+        c = TestClient(app)
+        ck = {_auth.SESSION_COOKIE: _auth.issue_session("Ue2e")}
+        r1 = c.post("/api/system/gym/create", json={"name": "E2E-A"}, cookies=ck)
+        assert r1.status_code == 200, r1.text
+        gid = r1.json()["id"]
+        assert c.post("/api/system/gym/admin/invite", json={"gym_id": gid},
+                      cookies=ck).status_code == 200
+        assert c.post("/api/system/gym/delete", json={"gym_id": gid},
+                      cookies=ck).status_code == 200
+        r2 = c.post("/api/system/gym/create", json={"name": "E2E-B"}, cookies=ck)
+        assert r2.status_code == 200, r2.text
+        assert c.post("/api/system/gym/restore", json={"gym_id": gid},
+                      cookies=ck).status_code == 200
+    finally:
+        settings.ADMIN_USER_IDS = old

@@ -72,11 +72,19 @@
         <button class="ghost" onclick="inviteAdmin({{ g.id }})">管理者招待</button>
         <button class="ghost" onclick="loadStaff({{ g.id }})">スタッフ表示</button>
         <button class="warn" onclick='delGym({{ g.id }}, {{ g.name|tojson }})' >削除</button>
+        {% else %}
+        <button onclick="restoreGym({{ g.id }})">復元</button>
         {% endif %}
       </td>
     </tr>
     {% endfor %}
+    {% if not gyms %}
+    <tr><td colspan="7" class="mut">ジムがまだありません。上の「ジムを作成」から作成してください。</td></tr>
+    {% endif %}
   </table>
+  {% if not active_gyms %}
+  <p class="mut" style="margin-top:10px">有効なジムが0件です。トレーナー・管理者の招待は<b>ジムごと</b>の操作なので、先にジムを作成してください（削除済みのジムは「復元」で戻せます）。</p>
+  {% endif %}
   <div id="staffBox" style="margin-top:12px"></div>
 </div>
 
@@ -135,6 +143,11 @@ async function createGym(){
 async function delGym(id, name){
   if(!confirm(name+" を削除します。\n所属メンバーの担当トレーナーは空欄になり、記録は残ります。")) return;
   const j = await post("/api/system/gym/delete", {gym_id:id, reason:"system_admin"});
+  if(j) location.reload();
+}
+async function restoreGym(id){
+  if(!confirm("このジムを復元しますか？（所属メンバーも有効に戻ります）")) return;
+  const j = await post("/api/system/gym/restore", {gym_id:id});
   if(j) location.reload();
 }
 async function inviteAdmin(id){

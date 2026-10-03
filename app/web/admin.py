@@ -28,7 +28,18 @@ templates = Jinja2Templates(
     directory=str(Path(__file__).resolve().parent.parent / "templates"))
 
 
+def _ensure_tables() -> None:
+    """管理画面のテーブルが無い環境でも動くように、アクセス時に冪等作成する."""
+    try:
+        from app.services.db import get_conn
+        with get_conn() as c:
+            admin_db.ensure_admin_tables(c)
+    except Exception:
+        logger.warning("管理テーブルの準備に失敗", exc_info=True)
+
+
 def _require_system_admin(request: Request) -> str:
+    _ensure_tables()
     uid = auth.current_user_id(request)
     if not uid:
         raise HTTPException(status_code=401, detail="ログインが必要です")
@@ -42,10 +53,12 @@ def system_home(request: Request):
     uid = auth.current_user_id(request)
     if not uid or not admin_db.is_system_admin(uid):
         return RedirectResponse("/login")
+    _ensure_tables()
     ctx = {
         "request": request,
         "me": uid,
         "gyms": admin_db.list_gyms(),
+        "active_gyms": admin_db.count_active_gyms(),
         "admins": admin_db.list_system_admins(),
         "env_admins": sorted(settings.admin_user_id_set),
         "audit": admin_db.list_audit(30),
@@ -70,8 +83,12 @@ def api_gym_create(request: Request, body: dict):
     name = (body.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="ジム名を入力してください")
-    g = admin_db.create_gym(name,
-                            owner_user_id=(body.get("owner_user_id") or uid))
+    try:
+        g = admin_db.create_gym(name,
+                                owner_user_id=(body.get("owner_user_id") or uid))
+    except Exception as e:            # 原因を画面に出す（握りつぶさない）
+        logger.exception("gym create failed")
+        raise HTTPException(status_code=500, detail=f"ジム作成に失敗: {e}")
     admin_db.add_audit(uid, "gym.create", "gym", str(g["id"]), name)
     return g
 
@@ -85,6 +102,17 @@ def api_gym_delete(request: Request, body: dict):
     reason = body.get("reason") or ""
     ok = admin_db.soft_delete_gym(gid, uid, reason)
     admin_db.add_audit(uid, "gym.delete", "gym", str(gid), reason)
+    return {"ok": ok}
+
+
+@router.post("/api/system/gym/restore")
+def api_gym_restore(request: Request, body: dict):
+    uid = _require_system_admin(request)
+    gid = int(body.get("gym_id") or 0)
+    if not gid:
+        raise HTTPException(status_code=400, detail="gym_id が必要です")
+    ok = admin_db.restore_gym(gid, uid)
+    admin_db.add_audit(uid, "gym.restore", "gym", str(gid))
     return {"ok": ok}
 
 

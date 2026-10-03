@@ -18,6 +18,11 @@ class _CompatCursor:
         desc = getattr(cur, "description", None)
         self._cols = [d[0] for d in desc] if desc else []
 
+    @property
+    def description(self):
+        """列情報を素通しする（PRAGMA が空でも SELECT から列名を取れるように）."""
+        return getattr(self._cur, "description", None)
+
     def fetchone(self):
         row = self._cur.fetchone()
         if row is None:
@@ -135,8 +140,15 @@ def init_db():
         return
     with get_conn() as c:
         for f in files:
-            c.executescript(Path(f).read_text(encoding="utf-8"))
-        _ensure_columns(c)
+            try:
+                c.executescript(Path(f).read_text(encoding="utf-8"))
+            except Exception:
+                # 1ファイルの失敗で残り（010など）が適用されない事態を防ぐ
+                logger.exception("migration failed: %s", Path(f).name)
+        try:
+            _ensure_columns(c)
+        except Exception:
+            logger.exception("_ensure_columns failed")
     logger.info("migrations applied: %s", [Path(f).name for f in files])
 
 
