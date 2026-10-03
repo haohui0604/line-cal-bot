@@ -98,6 +98,13 @@
     }
   }
 
+  async function get(path) {
+    var r = await fetch(path, { headers: { 'Accept': 'application/json' } });
+    var j = await r.json().catch(function () { return {}; });
+    if (!r.ok) throw new Error(j.detail || ('読み込みに失敗しました (' + r.status + ')'));
+    return j;
+  }
+
   async function post(path, body) {
     var r = await fetch(path, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -115,5 +122,6 @@
     finally { busy(btn, false); }
   }
 
-  window.UI = { toast: toast, busy: busy, showCode: showCode, post: post, copy: copy, run: run };
+  window.UI = { toast: toast, busy: busy, showCode: showCode,
+                get: get, post: post, copy: copy, run: run };
 })();

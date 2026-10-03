@@ -336,41 +336,52 @@ def create_trainer_invite(gym_id: int, created_by: str, days: int = 7) -> str:
 
 
 def use_trainer_invite(code: str, user_id: str) -> dict:
-    """招待コードを使ってトレーナーとして登録."""
+    """招待コードでスタッフ登録する（TR- → トレーナー / GA- → ジム管理者）.
+
+    trainer_invites.role を優先し、列が無い環境では接頭辞で判定する。
+    すでに同じ役割で active なら冪等に成功扱い。role が異なる場合は
+    その役割の membership を追加する（トレーナー→ジム管理者への昇格）。
+    """
     from datetime import datetime, timezone
+    from app.services.db import table_columns
     now = datetime.now(timezone.utc).isoformat()
     with get_conn() as c:
-        row = c.execute(
-            "SELECT * FROM trainer_invites WHERE code=?",
-            (code.upper(),)).fetchone()
+        row = c.execute("SELECT * FROM trainer_invites WHERE code=?",
+                        (str(code).upper(),)).fetchone()
         if not row:
             return {"result": "invalid"}
         r = dict(row)
-        if r["used_by"]:
+        if "role" in table_columns(c, "trainer_invites"):
+            role = (r.get("role") or "").strip() or None
+        else:
+            role = None
+        if not role:
+            role = ("gym_admin" if str(r.get("code", "")).upper().startswith("GA-")
+                    else "trainer")
+        if role not in ("trainer", "gym_admin"):
+            role = "trainer"
+        if r.get("used_by"):
             return {"result": "used"}
-        if r["expires_at"] < now:
+        if r.get("expires_at") and r["expires_at"] < now:
             return {"result": "expired"}
-        # すでにそのジムのトレーナーなら冪等で成功扱い
+        upsert_user(user_id)
         existing = c.execute(
             "SELECT id, status FROM memberships"
-            " WHERE gym_id=? AND user_id=? AND role='trainer'",
-            (r["gym_id"], user_id)).fetchone()
+            " WHERE gym_id=? AND user_id=? AND role=?",
+            (r["gym_id"], user_id, role)).fetchone()
         if existing:
             if existing["status"] == "active":
-                return {"result": "already", "gym_id": r["gym_id"]}
-            c.execute(
-                "UPDATE memberships SET status='active',"
-                " updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                (existing["id"],))
+                return {"result": "already", "gym_id": r["gym_id"], "role": role}
+            c.execute("UPDATE memberships SET status='active',"
+                      " updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                      (existing["id"],))
         else:
-            c.execute(
-                "INSERT INTO memberships (gym_id, user_id, role, status)"
-                " VALUES (?,?, 'trainer', 'active')",
-                (r["gym_id"], user_id))
-        c.execute(
-            "UPDATE trainer_invites SET used_by=? WHERE code=?",
-            (user_id, code.upper()))
-        return {"result": "ok", "gym_id": r["gym_id"]}
+            c.execute("INSERT INTO memberships (gym_id, user_id, role, status)"
+                      " VALUES (?,?,?,'active')", (r["gym_id"], user_id, role))
+        c.execute("UPDATE trainer_invites SET used_by=? WHERE code=?",
+                  (user_id, str(code).upper()))
+    return {"result": "ok", "gym_id": r["gym_id"], "role": role}
+
 
 
 def list_trainers(gym_id: int):
