@@ -71,7 +71,7 @@
         {% if not g.deleted_at %}
         <button class="ghost" onclick="inviteAdmin({{ g.id }})">管理者招待</button>
         <button class="ghost" onclick="loadStaff({{ g.id }})">スタッフ表示</button>
-        <button class="warn" onclick="delGym({{ g.id }}, '{{ g.name }}')">削除</button>
+        <button class="warn" onclick='delGym({{ g.id }}, {{ g.name|tojson }})' >削除</button>
         {% endif %}
       </td>
     </tr>
@@ -88,7 +88,7 @@
     <tr>
       <td><code>{{ a.user_id }}</code>{% if a.user_id in env_admins %} <span class="mut">(env)</span>{% endif %}</td>
       <td>{{ a.note or "" }}</td><td>{{ a.created_by or "" }}</td><td class="mut">{{ a.created_at or "" }}</td>
-      <td><button class="warn" onclick="rmAdmin('{{ a.user_id }}')">解除</button></td>
+      <td><button class="warn" onclick='rmAdmin({{ a.user_id|tojson }})' >解除</button></td>
     </tr>
     {% endfor %}
   </table>
@@ -145,13 +145,18 @@ async function loadStaff(id){
   const r = await fetch("/api/system/gym/"+id+"/staff");
   const j = await r.json();
   let h = "<table><tr><th>membership</th><th>user</th><th>役割</th><th>状態</th><th></th></tr>";
-  (j.staff||[]).forEach(s=>{
-    h += "<tr><td>"+s.id+"</td><td><code>"+s.user_id+"</code> "+(s.display_name||"")+
-         "</td><td>"+s.role+"</td><td>"+s.status+"</td><td>"+
-         (s.status==="active" ? "<button class='warn' onclick=\\"rmMember("+s.id+")\\">解除</button>" : "")+
-         "</td></tr>";
+  (j.staff||[]).forEach(function(s){
+    const btn = (s.status === "active")
+      ? '<button class="warn" data-remove-mid="' + s.id + '">解除</button>' : "";
+    h += "<tr><td>" + s.id + "</td><td><code>" + s.user_id + "</code> "
+       + (s.display_name || "") + "</td><td>" + s.role + "</td><td>" + s.status
+       + "</td><td>" + btn + "</td></tr>";
   });
-  document.getElementById("staffBox").innerHTML = h+"</table>";
+  const box = document.getElementById("staffBox");
+  box.innerHTML = h + "</table>";
+  box.querySelectorAll("[data-remove-mid]").forEach(function(b){
+    b.addEventListener("click", function(){ rmMember(Number(b.dataset.removeMid)); });
+  });
 }
 async function rmMember(id){
   if(!confirm("このスタッフを解除しますか？（担当メンバーは先に移管してください）")) return;

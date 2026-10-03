@@ -186,3 +186,38 @@ def test_gym_create_requires_name():
         assert e.value.status_code == 400
     finally:
         settings.ADMIN_USER_IDS = old
+
+
+def _script_of(html: str) -> str:
+    import re
+    return "\n".join(re.findall(r"<script>(.*?)</script>", html, re.S))
+
+
+def _admin_html() -> str:
+    old = settings.ADMIN_USER_IDS
+    settings.ADMIN_USER_IDS = "Uok"
+    try:
+        return admin_web.system_home(_req("Uok")).body.decode("utf-8")
+    finally:
+        settings.ADMIN_USER_IDS = old
+
+
+def test_page_script_has_no_escaped_quote_bug():
+    """JS を壊す \\" が無いこと（全ボタン無反応の再発防止）."""
+    script = _script_of(_admin_html())
+    assert '\\"' not in script
+    for fn in ("post", "createGym", "delGym", "inviteAdmin", "loadStaff",
+               "rmMember", "addAdmin", "rmAdmin"):
+        assert ("function " + fn) in script, fn
+
+
+def test_page_script_parses_with_node_if_available():
+    """実描画した script が構文エラーを含まないこと."""
+    import shutil, subprocess
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node が無い環境ではスキップ")
+    p = Path(tempfile.mkdtemp()) / "s.js"
+    p.write_text(_script_of(_admin_html()), encoding="utf-8")
+    r = subprocess.run([node, "--check", str(p)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
