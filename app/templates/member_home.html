@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>マイ記録</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script src="/static/charts.js"></script>
 <script>
 // LIFF SDK は動的に読み込み、失敗を確実に検知する
 // （scriptタグ直書きだとブロック時に原因が見えないため）
@@ -92,8 +93,9 @@ function loadLiffSdk(){
       <div class="pfc-line" style="margin-top:4px">
         現在の体重: <b id="wCurrent">—</b>
         <span class="muted" id="wCurrentDate"></span>
-        　／　増減（14日前比）: <b id="wDelta">—</b>
+        　／　増減（期間初日比）: <b id="wDelta">—</b>
         <span class="muted" id="wBaseDate"></span>
+        <span id="wTargetWrap" style="display:none">　／　目標体重: <b id="wTarget">—</b></span>
       </div>
       <canvas id="weightChart" height="130"></canvas>
     </div>
@@ -143,19 +145,17 @@ function showErr(msg){
 }
 
 async function api(path, body){
+  idToken = freshToken();   // LIFFは古いトークンを返すことがあるので毎回取り直す
+  if (!idToken) { reloginOnce(); throw new Error("認証情報を取得できませんでした"); }
   const res = await fetch(path, {
     method: "POST", headers: {"Content-Type": "application/json"},
     body: JSON.stringify(Object.assign({id_token: idToken}, body || {}))
   });
   if(res.status === 401){
-    // IDトークンの期限切れ。1回だけ取り直して再ログインさせる
-    if(!_reloginTried){
-      _reloginTried = true;
-      try { sessionStorage.removeItem("liff_login_tried_" + LIFF_ID); } catch(_) {}
-      liff.login({redirectUri: location.href});
-      throw new Error("認証の有効期限が切れました。再読み込みしてください");
-    }
-    throw new Error("401 認証エラー。再読み込みしてください");
+    let _d = ""; try { _d = (await res.json()).detail || ""; } catch(_) {}
+    reloginOnce();     // 古いIDトークンを捨てて、1回だけ再ログイン
+    throw new Error("401 認証エラー" + (_d ? "（" + _d + "）" : "") +
+                    "。再読み込みしてください");
   }
   if(!res.ok){
     let detail = "";
@@ -163,24 +163,43 @@ async function api(path, body){
     throw new Error("API " + path + " が " + res.status +
                     " を返しました " + detail);
   }
+  try { sessionStorage.removeItem(_GUARD_KEY); } catch(_) {}
   return res.json();
 }
 
 function fmt(v){ return Math.round(v || 0); }
 
 // ---- ログイン状態の取り直し（無限ループと行き止まりを防ぐ） ----
-let _reloginTried = false;
-async function ensureLogin(){
-  idToken = (liff.getIDToken && liff.getIDToken()) || null;
-  if (idToken) return true;
-  let tried = false;
-  try { tried = sessionStorage.getItem("liff_login_tried_" + LIFF_ID) === "1"; } catch(_) {}
-  if (!liff.isLoggedIn() && !tried) {
-    try { sessionStorage.setItem("liff_login_tried_" + LIFF_ID, "1"); } catch(_) {}
-    liff.login({redirectUri: location.href});   // 直後に isLoggedIn() が false でも再入しない
+let _reloginTried = false;                          // 同一ページ内の多重ループ防止
+const _GUARD_KEY = "liff_relogin_at_" + LIFF_ID;    // ページ跨ぎのループ防止
+
+// LIFF は古い ID トークンをキャッシュしたまま返すため、毎回取り直す
+function freshToken(){
+  try { return (liff.getIDToken && liff.getIDToken()) || null; } catch(_) { return null; }
+}
+
+// 期限切れトークンを捨てるため、必ず logout → login の順で「1回だけ」再ログイン。
+// logout を挟まないと古いトークンのまま戻ってきて、401 → login を無限に繰り返す。
+function reloginOnce(){
+  if (_reloginTried) return false;
+  _reloginTried = true;
+  let last = 0;
+  try { last = Number(sessionStorage.getItem(_GUARD_KEY) || 0); } catch(_) {}
+  if (last && Date.now() - last < 60000) {           // 1分以内の再入はループと判定
+    showErr("ログインが繰り返し失敗しています。\n"
+      + "LINEアプリのトークから開き直すか、少し時間をおいてから試してください。");
     return false;
   }
-  try { sessionStorage.removeItem("liff_login_tried_" + LIFF_ID); } catch(_) {}
+  try { sessionStorage.setItem(_GUARD_KEY, String(Date.now())); } catch(_) {}
+  try { liff.logout(); } catch(_) {}
+  liff.login({redirectUri: location.origin + location.pathname});
+  return true;
+}
+
+async function ensureLogin(){
+  idToken = freshToken();
+  if (idToken) return true;
+  if (!liff.isLoggedIn()) { reloginOnce(); return false; }
   showErr("ログイン情報を取得できませんでした。\n"
     + "LINEアプリのトークから開き直すか、下の「再読み込み」を押してください。\n"
     + "(isInClient=" + liff.isInClient() + " / loggedIn=" + liff.isLoggedIn() + ")");
@@ -218,52 +237,9 @@ async function main(){
   document.getElementById("tF").textContent = fmt(s.today.fat_g);
   document.getElementById("tC").textContent = fmt(s.today.carb_g);
 
-  new Chart(document.getElementById("calChart"), {
-    data: { labels: s.labels, datasets: [
-      { type:"bar", label:"摂取 kcal", data:s.intake,
-        backgroundColor:"#06c75566", borderColor:"#06c755", borderWidth:1 },
-      { type:"bar", label:"消費 kcal", data:s.burn,
-        backgroundColor:"#f59e0b66", borderColor:"#f59e0b", borderWidth:1 }
-    ]},
-    options:{ responsive:true, interaction:{mode:"index"} }
-  });
-  // 体重: データの min-10% 〜 max+10% の範囲に絞って変動を見やすくする
-  const wvals = (s.weight || []).filter(v => v != null);
-  let wopts = { responsive:true };
-  if (wvals.length) {
-    const wmin = Math.min(...wvals), wmax = Math.max(...wvals);
-    const pad = (wmax - wmin) * 0.1 || wmax * 0.02;  // 変動が小さい場合は2%確保
-    wopts.scales = { y: { min: +(wmin - pad).toFixed(1),
-                          max: +(wmax + pad).toFixed(1) } };
-  }
-  new Chart(document.getElementById("weightChart"), {
-    type:"line",
-    data:{ labels:s.weight_labels, datasets:[
-      { label:"体重 kg", data:s.weight, borderColor:"#3b82f6",
-        tension:.3, pointRadius:2, spanGaps:true }
-    ]},
-    options: wopts
-  });
-
-  // 体重の数値（現在値と14日前からの増減）
-  {
-    const wc = document.getElementById("wCurrent");
-    if(wc) wc.textContent = (s.weight_current == null) ? "—"
-      : s.weight_current.toFixed(1) + " kg";
-    const wcd = document.getElementById("wCurrentDate");
-    if(wcd) wcd.textContent = s.weight_current_date ? "(" + s.weight_current_date + ")" : "";
-    const wd = document.getElementById("wDelta");
-    if(wd){
-      if(s.weight_delta == null){ wd.textContent = "—"; }
-      else {
-        const d = s.weight_delta;
-        wd.textContent = (d > 0 ? "+" : "") + d.toFixed(1) + " kg";
-        wd.style.color = d > 0 ? "#ef4444" : (d < 0 ? "#10b981" : "inherit");
-      }
-    }
-    const wbd = document.getElementById("wBaseDate");
-    if(wbd) wbd.textContent = s.weight_base_date ? "基準 " + s.weight_base_date : "";
-  }
+  CalCharts.calorie(document.getElementById("calChart"), s);
+  CalCharts.weight(document.getElementById("weightChart"), s);
+  CalCharts.weightText({}, s);
 
   new Chart(document.getElementById("pfcChart"), {
     type:"bar",

@@ -57,14 +57,41 @@ def exchange_code(code: str) -> dict:
     return resp.json()
 
 
+class IdTokenError(Exception):
+    """LINEのIDトークン検証に失敗した（理由つき）."""
+
+    def __init__(self, status: int, error: str = "", description: str = ""):
+        self.status = status
+        self.error = error
+        self.description = description
+        super().__init__(f"verify {status}: {error} / {description}")
+
+
 def verify_id_token(id_token: str) -> dict:
     """id_token を検証し {"sub": line_user_id, "name": ..., "picture": ...} を返す.
-    LIFFのIDトークンも同じログインチャンネルならこの関数で検証できる."""
+
+    LIFFのIDトークンも同じログインチャンネルならこの関数で検証できる。
+    失敗時は LINE が返す error / error_description を保持して IdTokenError を投げる。
+    400 の理由（IdToken expired / Invalid IdToken Audience 等）を必ずログに残し、
+    「再ログインで直るのか、設定ミスなのか」を切り分けられるようにする。
+    """
     resp = httpx.post(VERIFY_URL, data={
         "id_token": id_token,
         "client_id": settings.LINE_LOGIN_CHANNEL_ID,
     }, timeout=10)
-    resp.raise_for_status()
+    if resp.status_code != 200:
+        try:
+            body = resp.json()
+        except Exception:
+            body = {"error": "non_json",
+                    "error_description": (resp.text or "")[:300]}
+        error = str(body.get("error") or "")
+        desc = str(body.get("error_description") or "")
+        logger.error("LINE verify failed: status=%s client_id=%s error=%s "
+                     "desc=%s token_len=%s",
+                     resp.status_code, settings.LINE_LOGIN_CHANNEL_ID,
+                     error, desc, len(id_token or ""))
+        raise IdTokenError(resp.status_code, error, desc)
     return resp.json()
 
 

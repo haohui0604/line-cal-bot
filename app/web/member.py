@@ -19,7 +19,7 @@ from app.config import settings
 from app.services.db import (
     fetch_day_summary, fetch_recent_entries, fetch_weight_series,
 )
-from app.services import gym_db
+from app.services import gym_db, periods
 from app.services.dates import today_jst_date
 from app.services import dates as jst_dates
 from app.services.day_view import pfc_percent_series
@@ -31,13 +31,52 @@ templates = Jinja2Templates(
 )
 
 
+def _minimal_request(path: str = "/"):
+    """テスト等から直接呼ばれたとき用の最小 Request."""
+    from starlette.requests import Request as _Req
+    return _Req({"type": "http", "method": "GET", "path": path,
+                 "raw_path": path.encode(), "headers": [], "query_string": b"",
+                 "scheme": "http", "server": ("testserver", 80),
+                 "client": ("test", 1), "root_path": ""})
+
+
+def _render(request, name: str, ctx: dict = None):
+    """Starlette の新旧どちらの TemplateResponse シグネチャでも描画する.
+
+    新しい Starlette は TemplateResponse(request, name, context) の順なので、
+    旧来の ("name", {...}) 呼び出しは name に dict が入り
+    "unhashable type: 'dict'" で 500 になる。
+    """
+    import inspect
+    ctx = dict(ctx or {})
+    ctx.setdefault("request", request)
+    try:
+        params = list(inspect.signature(templates.TemplateResponse).parameters)
+    except (TypeError, ValueError):
+        params = []
+    if params[:2] == ["request", "name"]:
+        return templates.TemplateResponse(request, name, ctx)
+    return templates.TemplateResponse(name, ctx)
+
+
 def _verify_uid(id_token: str) -> str:
-    """LIFFのIDトークンを検証して line_user_id を返す."""
+    """LIFFのIDトークンを検証して line_user_id を返す.
+
+    失敗理由をレスポンスにも載せる。期限切れ（expired）は再ログインで直るが、
+    audience 不一致などの設定ミスは何度ログインしても直らないため、
+    フロントとログの両方で区別できるようにする。
+    """
     try:
         claims = auth.verify_id_token(id_token)
-    except Exception:
-        logger.warning("liff id_token verify failed", exc_info=True)
-        raise HTTPException(status_code=401, detail="認証に失敗しました")
+    except Exception as e:
+        error = getattr(e, "error", "") or type(e).__name__
+        desc = getattr(e, "description", "")
+        logger.warning("liff id_token verify failed: error=%s desc=%s",
+                       error, desc)
+        hint = "expired" if "expir" in desc.lower() else "invalid"
+        raise HTTPException(
+            status_code=401,
+            detail=f"認証に失敗しました（{hint} / {error}）")
     uid = claims["sub"]
     gym_db.upsert_user(uid, claims.get("name"), claims.get("picture"))
     return uid
@@ -49,30 +88,12 @@ MAX_OFFSET = 3      # 何ページ前まで遡れるか
 
 def _window(days: int, offset: int):
     """(start, end) を返す。offset=0 が直近、増えるほど過去へ遡る."""
-    days = max(1, min(int(days), 90))
-    offset = max(0, min(int(offset), 52))
-    end = today_jst_date() - timedelta(days=offset * days)
-    start = end - timedelta(days=days - 1)
-    return start, end
+    return periods.window(days, offset)
 
 
 def _weight_stats(series):
-    """期間内の体重から「現在値」と「期間初日（14日前）からの増減」を出す.
-
-    記録が無い日は fetch_weight_series が直前の値で繰越済みなので、
-    14日前ちょうどの記録が無くても「その日以前の直近値」が入る。
-    """
-    vals = [(str(w.get("date") or "")[:10], w.get("weight_kg"))
-            for w in (series or [])]
-    vals = [(d, v) for d, v in vals if v is not None]
-    if not vals:
-        return {"current": None, "base": None, "delta": None,
-                "current_date": None, "base_date": None}
-    base_date, base = vals[0]
-    cur_date, cur = vals[-1]
-    return {"current": round(float(cur), 1), "base": round(float(base), 1),
-            "delta": round(float(cur) - float(base), 1),
-            "current_date": cur_date, "base_date": base_date}
+    """期間内の体重から「現在値」と「期間初日からの増減」を出す（共通ロジック）."""
+    return periods.weight_stats(series)
 
 
 class TokenIn(BaseModel):
@@ -92,16 +113,7 @@ def member_home(request: Request, offset: int = 0):
     if not settings.LIFF_ID:
         raise HTTPException(status_code=503, detail="LIFFが未設定です")
     off = max(0, min(int(offset), MAX_OFFSET))
-    start, end = _window(PAGE_DAYS, off)
-    nav = {
-        "offset": off,
-        "max_offset": MAX_OFFSET,
-        "past_href": f"?offset={off + 1}",                 # ＜ 過去
-        "future_href": f"?offset={max(0, off - 1)}",       # 未来 ＞
-        "show_past": off < MAX_OFFSET,
-        "show_future": off > 0,
-        "range": f"{start.isoformat()} 〜 {end.isoformat()}",
-    }
+    nav = periods.period_nav(PAGE_DAYS, off)
     ctx = {"request": request, "liff_id": settings.LIFF_ID, "nav": nav}
     try:      # Starlette 0.29+ は (request, name, context)
         return templates.TemplateResponse(
@@ -112,37 +124,21 @@ def member_home(request: Request, offset: int = 0):
 
 @router.post("/api/me/summary")
 def me_summary(body: TokenIn):
-    """自分のカロリー推移・体重推移（グラフ用JSON）."""
+    """自分のカロリー推移・体重推移（グラフ用JSON）.
+
+    トレーナー画面と同じ periods.build_summary を使うので、
+    現在値・増減・目標体重・目標摂取カロリーの扱いが両画面で一致する。
+    """
     uid = _verify_uid(body.id_token)
     days = max(1, min(body.days, 90))
     offset = max(0, min(body.offset, 52))
-    labels, intake, burn, pfc = [], [], [], []
-    today = today_jst_date()
-    start, end = _window(days, offset)
-    for i in range(days):
-        d = (start + timedelta(days=i)).isoformat()
-        s = fetch_day_summary(uid, d)
-        labels.append(d[5:])
-        intake.append(s.get("intake_kcal") or 0)
-        burn.append(s.get("burn_kcal") or s.get("burn") or 0)
-        pfc.append((s.get("protein_g"), s.get("fat_g"), s.get("carb_g")))
-    w_all = fetch_weight_series(uid, days=days * (offset + 1)) or []
-    _s, _e = start.isoformat(), end.isoformat()
-    wseries = [w for w in w_all if _s <= str(w.get("date") or "")[:10] <= _e]
-    wst = _weight_stats(wseries)
-    return {
-        "labels": labels, "intake": intake, "burn": burn,
-        "window_start": _s, "window_end": _e, "offset": offset,
-        "weight_labels": [(w.get("date") or "")[5:] for w in wseries],
-        "weight": [w.get("weight_kg") for w in wseries],
-        "weight_current": wst["current"],
-        "weight_base": wst["base"],
-        "weight_delta": wst["delta"],
-        "weight_current_date": wst["current_date"],
-        "weight_base_date": wst["base_date"],
-        "today": fetch_day_summary(uid, today.isoformat()),
-        **pfc_percent_series(pfc),
-    }
+    data = periods.build_summary(uid, days=days, offset=offset)
+    data["today"] = fetch_day_summary(uid, today_jst_date().isoformat())
+    try:
+        data["share"] = gym_db.get_member_share_scope(uid)
+    except Exception:
+        data["share"] = None
+    return data
 
 
 @router.post("/api/me/history")
@@ -173,10 +169,15 @@ def me_role(body: TokenIn):
 
 
 @router.get("/me/day", response_class=HTMLResponse)
-def member_day_page():
-    """会員の日別ビュー。/me のサブパスに置くことでLIFFのエンドポイント配下とする."""
-    return templates.TemplateResponse("day_detail.html", {
-        "request": {}, "member_id": None, "can_comment": False,
+def member_day_page(request: Request = None):
+    """会員の日別ビュー。/me のサブパスに置くことでLIFFのエンドポイント配下とする.
+
+    request はテストから直接呼べるように省略可能。
+    """
+    if request is None:
+        request = _minimal_request("/me/day")
+    return _render(request, "day_detail.html", {
+        "member_id": None, "can_comment": False,
         "can_edit": True,
         "liff_id": settings.LIFF_ID,
         "initial_date": jst_dates.yesterday_jst(),
