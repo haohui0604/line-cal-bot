@@ -478,24 +478,38 @@ def remove_member(membership_id: int, *, by_user_id: str) -> Dict[str, Any]:
 
 # ---- ジム管理者画面 (Phase 5) ----
 
-def get_gym(gym_id: int):
+def get_gym(gym_id: int) -> Optional[Dict[str, Any]]:
+    """ジム1件。deleted_at 列が無い環境でも落ちないようにフォールバックする."""
+    from app.services.db import table_columns
     with get_conn() as c:
-        return _d(c.execute(
-            "SELECT id, name, join_code, plan, owner_user_id, created_at,"
-            "       deleted_at FROM gyms WHERE id=?", (gym_id,)).fetchone())
+        cols = ["id", "name", "join_code", "plan", "plan_expires_at",
+                "owner_user_id", "created_at"]
+        have = table_columns(c, "gyms")
+        if "deleted_at" in have:
+            cols.append("deleted_at")
+        sql = "SELECT " + ", ".join(cols) + " FROM gyms WHERE id=?"
+        return _d(c.execute(sql, (gym_id,)).fetchone())
+
 
 
 def list_admin_gyms(user_id: str):
-    """そのユーザーが管理者を務める有効なジム一覧."""
+    """そのユーザーが管理者を務めるジム一覧.
+
+    gyms.deleted_at が無い環境（マイグレーション未適用の Turso 等）でも
+    500 にならないよう、列の有無でフィルタを切り替える。
+    """
+    from app.services.db import table_columns
     with get_conn() as c:
-        rows = c.execute("""
-            SELECT m.gym_id, g.name AS gym_name, g.join_code
-              FROM memberships m JOIN gyms g ON g.id = m.gym_id
-             WHERE m.user_id=? AND m.role='gym_admin' AND m.status='active'
-               AND g.deleted_at IS NULL
-             ORDER BY m.id
-        """, (user_id,)).fetchall()
+        has_deleted = "deleted_at" in table_columns(c, "gyms")
+        sql = ("SELECT m.gym_id, g.name AS gym_name, g.join_code"
+               " FROM memberships m JOIN gyms g ON g.id = m.gym_id"
+               " WHERE m.user_id=? AND m.role='gym_admin' AND m.status='active'")
+        if has_deleted:
+            sql += " AND g.deleted_at IS NULL"
+        sql += " ORDER BY m.id"
+        rows = c.execute(sql, (user_id,)).fetchall()
     return [dict(r) for r in rows]
+
 
 
 def list_gym_staff_with_status(gym_id: int):
@@ -611,12 +625,20 @@ def count_my_member_comments(trainer_id: str) -> int:
 # ================= Phase 6: 質問スレッド・未確認管理・ジム設定 =================
 
 def _ensure_reply_support(c) -> None:
-    """comments.reply_to_id / notified_at を冪等に用意する."""
-    cols = {r[1] for r in c.execute("PRAGMA table_info(comments)").fetchall()}
-    if "reply_to_id" not in cols:
-        c.execute("ALTER TABLE comments ADD COLUMN reply_to_id INTEGER")
-    if "notified_at" not in cols:
-        c.execute("ALTER TABLE comments ADD COLUMN notified_at TEXT")
+    """comments.reply_to_id / notified_at を冪等に用意する.
+
+    PRAGMA が使えない環境でも動くよう db.table_columns() で判定する。
+    """
+    from app.services.db import table_columns
+    cols = table_columns(c, "comments")
+    for name, decl in (("reply_to_id", "INTEGER"), ("notified_at", "TEXT")):
+        if name in cols:
+            continue
+        try:
+            c.execute(f"ALTER TABLE comments ADD COLUMN {name} {decl}")
+        except Exception:
+            pass
+
 
 
 def add_reply(*, member_id: str, trainer_id: str, body: str,

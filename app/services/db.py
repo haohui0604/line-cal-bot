@@ -23,14 +23,28 @@ class _CompatCursor:
         """列情報を素通しする（PRAGMA が空でも SELECT から列名を取れるように）."""
         return getattr(self._cur, "description", None)
 
+    def _refresh_cols(self):
+        """PRAGMA など description が遅れて入る文に備えて列名を取り直す."""
+        if not self._cols:
+            desc = getattr(self._cur, "description", None)
+            if desc:
+                self._cols = [d[0] for d in desc]
+
     def fetchone(self):
+        self._refresh_cols()
         row = self._cur.fetchone()
         if row is None:
             return None
+        if not self._cols:
+            return row
         return dict(zip(self._cols, row))
 
     def fetchall(self):
-        return [dict(zip(self._cols, r)) for r in self._cur.fetchall()]
+        self._refresh_cols()
+        rows = self._cur.fetchall()
+        if not self._cols:
+            return list(rows)
+        return [dict(zip(self._cols, r)) for r in rows]
 
     @property
     def rowcount(self):
@@ -106,20 +120,57 @@ ADDED_COLUMNS = {
 }
 
 
-def _ensure_columns(c) -> None:
-    """定義にあって実テーブルに無いカラムだけを追加する."""
-    for table, cols in ADDED_COLUMNS.items():
-        try:
-            rows = c.execute(f"PRAGMA table_info({table})").fetchall()
-        except Exception:
-            logger.exception("PRAGMA table_info failed: %s", table)
+def table_columns(conn, table: str) -> set:
+    """テーブルのカラム名集合を返す。PRAGMA が使えない環境(libsql等)でも動く.
+
+    1) SELECT * FROM t LIMIT 0 の description（libsql でも取得できる）
+    2) PRAGMA table_info(t)（sqlite3 / sqlite3.Row / tuple / dict すべて許容）
+    3) どちらも取れなければ空集合（＝不明。呼び出し側は「無い」前提で動く）
+    """
+    try:
+        cur = conn.execute(f"SELECT * FROM {table} LIMIT 0")
+        desc = getattr(cur, "description", None)
+        if desc:
+            names = set()
+            for d in desc:
+                try:
+                    names.add(d[0])
+                except Exception:
+                    pass
+            if names:
+                return names
+    except Exception:
+        pass
+    try:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    except Exception:
+        return set()
+    out = set()
+    for r in rows:
+        if isinstance(r, dict):
+            if "name" in r:
+                out.add(r["name"])
             continue
-        have = set()
-        for r in rows:
+        try:
+            out.add(r["name"])          # sqlite3.Row
+        except Exception:
             try:
-                have.add(r["name"])
-            except (TypeError, KeyError, IndexError):
-                have.add(r[1])
+                out.add(r[1])           # tuple
+            except Exception:
+                pass
+    return out
+
+
+def _ensure_columns(c) -> None:
+    """定義にあって実テーブルに無いカラムだけを追加する.
+
+    カラム判定は table_columns() に一本化し、PRAGMA が使えない
+    Turso/libsql でもスキーマのズレを自動修復できるようにする。
+    判定できない場合は「無い」とみなして ALTER を試し、
+    既存カラムの重複エラーは握りつぶす（冪等）。
+    """
+    for table, cols in ADDED_COLUMNS.items():
+        have = table_columns(c, table)
         for name, decl in cols.items():
             if name in have:
                 continue
@@ -127,7 +178,9 @@ def _ensure_columns(c) -> None:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
                 logger.info("added column: %s.%s", table, name)
             except Exception:
-                logger.exception("ALTER TABLE failed: %s.%s", table, name)
+                logger.warning("ALTER TABLE skipped (already exists?): %s.%s",
+                               table, name)
+
 
 
 def init_db():
