@@ -177,7 +177,7 @@ def day_entry_ops(body: EntryOpIn, request: Request):
         if body.meal_slot not in ALLOWED_SLOTS:
             raise HTTPException(
                 status_code=400,
-                detail="区分は 朝食/昼食/夕食/間食/夜食 から選んでください")
+                detail="区分は 朝食/昼食/夕食/間食 から選んでください")
         # 日付は実在する日付・未来日不可（未指定なら日付は変更しない）
         new_date = (body.date or "").strip() or None
         if new_date:

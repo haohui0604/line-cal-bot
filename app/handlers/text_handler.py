@@ -419,7 +419,7 @@ def handle_slot_choice(user_id: str, payload: str):
         p["awaiting_other"] = True
         return TextSendMessage(text=(
             "いつの食事か、日付と区分を入力してください。\n"
-            "例: 「おとといのひる」「2日前の夜食」「10/2 昼食」「昨日の朝」\n"
+            "例: 「おとといのひる」「2日前の夕食」「10/2 昼食」「昨日の朝」\n"
             "（うまく読み取れないときは、もう一度お願いします）"))
     try:
         off_s, slot = payload.split(":", 1)
@@ -447,10 +447,10 @@ def _resolve_other_slot(user_id: str, text: str):
         if not d:
             miss.append("日付（今日／昨日／おととい／2日前／10/2 など）")
         if not slot:
-            miss.append("区分（朝食／昼食／夕食／間食／夜食）")
+            miss.append("区分（朝食／昼食／夕食／間食）")
         return TextSendMessage(text=(
             "うまく読み取れませんでした。" + "と".join(miss) + "を入れてください。\n"
-            "例: 「おとといのひる」「2日前の夜食」「10/2 昼食」"))
+            "例: 「おとといのひる」「2日前の夕食」「10/2 昼食」"))
     p["date"] = d
     p["meal_slot"] = slot
     p["awaiting_other"] = False

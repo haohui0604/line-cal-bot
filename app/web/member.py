@@ -9,7 +9,7 @@ import logging
 from datetime import date, timedelta
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -43,6 +43,38 @@ def _verify_uid(id_token: str) -> str:
     return uid
 
 
+PAGE_DAYS = 14      # 1ページ＝14日
+MAX_OFFSET = 3      # 何ページ前まで遡れるか
+
+
+def _window(days: int, offset: int):
+    """(start, end) を返す。offset=0 が直近、増えるほど過去へ遡る."""
+    days = max(1, min(int(days), 90))
+    offset = max(0, min(int(offset), 52))
+    end = today_jst_date() - timedelta(days=offset * days)
+    start = end - timedelta(days=days - 1)
+    return start, end
+
+
+def _weight_stats(series):
+    """期間内の体重から「現在値」と「期間初日（14日前）からの増減」を出す.
+
+    記録が無い日は fetch_weight_series が直前の値で繰越済みなので、
+    14日前ちょうどの記録が無くても「その日以前の直近値」が入る。
+    """
+    vals = [(str(w.get("date") or "")[:10], w.get("weight_kg"))
+            for w in (series or [])]
+    vals = [(d, v) for d, v in vals if v is not None]
+    if not vals:
+        return {"current": None, "base": None, "delta": None,
+                "current_date": None, "base_date": None}
+    base_date, base = vals[0]
+    cur_date, cur = vals[-1]
+    return {"current": round(float(cur), 1), "base": round(float(base), 1),
+            "delta": round(float(cur) - float(base), 1),
+            "current_date": cur_date, "base_date": base_date}
+
+
 class TokenIn(BaseModel):
     id_token: str
     days: int = 14
@@ -51,12 +83,31 @@ class TokenIn(BaseModel):
 
 
 @router.get("/me", response_class=HTMLResponse)
-def member_home():
-    """LIFFのエンドポイント。LIFF_IDはテンプレートに埋め込む."""
+def member_home(request: Request, offset: int = 0):
+    """LIFFのエンドポイント。LIFF_IDはテンプレートに埋め込む.
+
+    期間ナビ（＜過去 / 未来＞）はサーバ側で描画する。
+    offset が増えるほど過去へ遡る（offset=0 が直近14日）。
+    """
     if not settings.LIFF_ID:
         raise HTTPException(status_code=503, detail="LIFFが未設定です")
-    return templates.TemplateResponse(
-        "member_home.html", {"request": {}, "liff_id": settings.LIFF_ID})
+    off = max(0, min(int(offset), MAX_OFFSET))
+    start, end = _window(PAGE_DAYS, off)
+    nav = {
+        "offset": off,
+        "max_offset": MAX_OFFSET,
+        "past_href": f"?offset={off + 1}",                 # ＜ 過去
+        "future_href": f"?offset={max(0, off - 1)}",       # 未来 ＞
+        "show_past": off < MAX_OFFSET,
+        "show_future": off > 0,
+        "range": f"{start.isoformat()} 〜 {end.isoformat()}",
+    }
+    ctx = {"request": request, "liff_id": settings.LIFF_ID, "nav": nav}
+    try:      # Starlette 0.29+ は (request, name, context)
+        return templates.TemplateResponse(
+            request=request, name="member_home.html", context=ctx)
+    except TypeError:  # 旧Starletteは (name, context)
+        return templates.TemplateResponse("member_home.html", ctx)
 
 
 @router.post("/api/me/summary")
@@ -67,8 +118,7 @@ def me_summary(body: TokenIn):
     offset = max(0, min(body.offset, 52))
     labels, intake, burn, pfc = [], [], [], []
     today = today_jst_date()
-    end = today - timedelta(days=offset * days)
-    start = end - timedelta(days=days - 1)
+    start, end = _window(days, offset)
     for i in range(days):
         d = (start + timedelta(days=i)).isoformat()
         s = fetch_day_summary(uid, d)
@@ -79,11 +129,17 @@ def me_summary(body: TokenIn):
     w_all = fetch_weight_series(uid, days=days * (offset + 1)) or []
     _s, _e = start.isoformat(), end.isoformat()
     wseries = [w for w in w_all if _s <= str(w.get("date") or "")[:10] <= _e]
+    wst = _weight_stats(wseries)
     return {
         "labels": labels, "intake": intake, "burn": burn,
         "window_start": _s, "window_end": _e, "offset": offset,
         "weight_labels": [(w.get("date") or "")[5:] for w in wseries],
         "weight": [w.get("weight_kg") for w in wseries],
+        "weight_current": wst["current"],
+        "weight_base": wst["base"],
+        "weight_delta": wst["delta"],
+        "weight_current_date": wst["current_date"],
+        "weight_base_date": wst["base_date"],
         "today": fetch_day_summary(uid, today.isoformat()),
         **pfc_percent_series(pfc),
     }

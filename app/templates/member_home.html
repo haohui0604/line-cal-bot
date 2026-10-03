@@ -75,9 +75,13 @@ function loadLiffSdk(){
     </div>
 
     <div class="card" style="display:flex;justify-content:space-between;align-items:center;padding:10px 16px">
-      <a id="pgPrev" href="?offset=0" style="text-decoration:none;font-weight:700;font-size:20px">＜</a>
-      <span id="pgRange" class="muted" style="font-size:13px"></span>
-      <a id="pgNext" href="?offset=1" style="text-decoration:none;font-weight:700;font-size:20px">＞</a>
+      {% if nav and nav.show_past %}
+      <a id="pgPast" href="{{ nav.past_href }}" style="text-decoration:none;font-weight:700;font-size:15px">＜ 過去</a>
+      {% else %}<span style="width:64px"></span>{% endif %}
+      <span id="pgRange" class="muted" style="font-size:13px">{{ nav.range if nav else "" }}</span>
+      {% if nav and nav.show_future %}
+      <a id="pgFuture" href="{{ nav.future_href }}" style="text-decoration:none;font-weight:700;font-size:15px">未来 ＞</a>
+      {% else %}<span style="width:64px"></span>{% endif %}
     </div>
     <div class="card">
       <b>📈 カロリー推移（14日）</b>
@@ -85,6 +89,12 @@ function loadLiffSdk(){
     </div>
     <div class="card">
       <b>⚖️ 体重推移（14日）</b>
+      <div class="pfc-line" style="margin-top:4px">
+        現在の体重: <b id="wCurrent">—</b>
+        <span class="muted" id="wCurrentDate"></span>
+        　／　増減（14日前比）: <b id="wDelta">—</b>
+        <span class="muted" id="wBaseDate"></span>
+      </div>
       <canvas id="weightChart" height="130"></canvas>
     </div>
 
@@ -122,10 +132,10 @@ function showErr(msg){
   }
 }
 
-async function api(path){
+async function api(path, body){
   const res = await fetch(path, {
     method: "POST", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({id_token: idToken})
+    body: JSON.stringify(Object.assign({id_token: idToken}, body || {}))
   });
   if(res.status === 401){
     // IDトークンの期限切れ。1回だけ取り直して再ログインさせる
@@ -185,14 +195,12 @@ async function main(){
   }
   if(!await ensureLogin()) return;
 
+  // 期間ナビはサーバ側で ?offset= から描画済み。ここではデータ取得にだけ使う
   const _off = Math.max(0, Math.min(3, parseInt(new URLSearchParams(location.search).get("offset") || "0", 10) || 0));
   const s = await api("/api/me/summary", {days: 14, offset: _off});
-  const _pg = document.getElementById("pgRange");
-  if(_pg){ _pg.textContent = (s.window_start||"") + " 〜 " + (s.window_end||"");
-    document.getElementById("pgPrev").setAttribute("href", "?offset=" + Math.max(0, _off-1));
-    document.getElementById("pgNext").setAttribute("href", "?offset=" + (_off+1));
-    if(_off<=0) document.getElementById("pgPrev").style.visibility="hidden";
-    if(_off>=3) document.getElementById("pgNext").style.visibility="hidden"; }
+  { const _pg = document.getElementById("pgRange");
+    if(_pg && s.window_start && s.window_end){
+      _pg.textContent = s.window_start + " 〜 " + s.window_end; } }
   document.getElementById("tIntake").textContent = fmt(s.today.intake_kcal);
   document.getElementById("tBurn").textContent =
     fmt(s.today.burn_kcal || s.today.burn);
@@ -226,6 +234,26 @@ async function main(){
     ]},
     options: wopts
   });
+
+  // 体重の数値（現在値と14日前からの増減）
+  {
+    const wc = document.getElementById("wCurrent");
+    if(wc) wc.textContent = (s.weight_current == null) ? "—"
+      : s.weight_current.toFixed(1) + " kg";
+    const wcd = document.getElementById("wCurrentDate");
+    if(wcd) wcd.textContent = s.weight_current_date ? "(" + s.weight_current_date + ")" : "";
+    const wd = document.getElementById("wDelta");
+    if(wd){
+      if(s.weight_delta == null){ wd.textContent = "—"; }
+      else {
+        const d = s.weight_delta;
+        wd.textContent = (d > 0 ? "+" : "") + d.toFixed(1) + " kg";
+        wd.style.color = d > 0 ? "#ef4444" : (d < 0 ? "#10b981" : "inherit");
+      }
+    }
+    const wbd = document.getElementById("wBaseDate");
+    if(wbd) wbd.textContent = s.weight_base_date ? "基準 " + s.weight_base_date : "";
+  }
 
   new Chart(document.getElementById("pfcChart"), {
     type:"bar",

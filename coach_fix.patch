@@ -50,10 +50,10 @@ index da461d0..f1c814e 100644
  
  def issue_session(line_user_id: str) -> str:
 diff --git a/app/handlers/button_builder.py b/app/handlers/button_builder.py
-index 1a69d10..cccf142 100644
+index 1a69d10..7b49452 100644
 --- a/app/handlers/button_builder.py
 +++ b/app/handlers/button_builder.py
-@@ -21,3 +21,24 @@ def msq(label, text=None):
+@@ -21,3 +21,22 @@ def msq(label, text=None):
      return QuickReplyButton(
          action=MessageAction(label=label, text=text or label)
      )
@@ -62,19 +62,17 @@ index 1a69d10..cccf142 100644
 +def slot_qr():
 +    """写真アップ後「いつの食事か」を選ぶクイックリプライ（11件）.
 +
-+    LINEのクイックリプライ上限は13件（12件＋キャンセル）。postback data は slot=<offset>:<slot>。
++    LINEのクイックリプライ上限は13件（10件＝8区分＋その他＋キャンセル）。postback data は slot=<offset>:<slot>。
 +    """
 +    return qr(
 +        pb("今日の朝食", "slot=0:breakfast", "今日の朝食"),
 +        pb("今日の昼食", "slot=0:lunch", "今日の昼食"),
 +        pb("今日の夕食", "slot=0:dinner", "今日の夕食"),
 +        pb("今日の間食", "slot=0:snack", "今日の間食"),
-+        pb("今日の夜食", "slot=0:snack", "今日の夜食"),
 +        pb("昨日の朝食", "slot=1:breakfast", "昨日の朝食"),
 +        pb("昨日の昼食", "slot=1:lunch", "昨日の昼食"),
 +        pb("昨日の夕食", "slot=1:dinner", "昨日の夕食"),
 +        pb("昨日の間食", "slot=1:snack", "昨日の間食"),
-+        pb("昨日の夜食", "slot=1:snack", "昨日の夜食"),
 +        pb("その他", "slot=other", "その他"),
 +        pb("キャンセル", "slot=cancel", "キャンセル"),
 +    )
@@ -117,7 +115,7 @@ index e1e4483..2dcf72c 100644
  
  def _make_label_reply(d):
 diff --git a/app/handlers/text_handler.py b/app/handlers/text_handler.py
-index 901fc4e..b4a9ae5 100644
+index 901fc4e..b590fba 100644
 --- a/app/handlers/text_handler.py
 +++ b/app/handlers/text_handler.py
 @@ -1,5 +1,6 @@
@@ -198,7 +196,7 @@ index 901fc4e..b4a9ae5 100644
 +        p["awaiting_other"] = True
 +        return TextSendMessage(text=(
 +            "いつの食事か、日付と区分を入力してください。\n"
-+            "例: 「おとといのひる」「2日前の夜食」「10/2 昼食」「昨日の朝」\n"
++            "例: 「おとといのひる」「2日前の夕食」「10/2 昼食」「昨日の朝」\n"
 +            "（うまく読み取れないときは、もう一度お願いします）"))
 +    try:
 +        off_s, slot = payload.split(":", 1)
@@ -226,10 +224,10 @@ index 901fc4e..b4a9ae5 100644
 +        if not d:
 +            miss.append("日付（今日／昨日／おととい／2日前／10/2 など）")
 +        if not slot:
-+            miss.append("区分（朝食／昼食／夕食／間食／夜食）")
++            miss.append("区分（朝食／昼食／夕食／間食）")
 +        return TextSendMessage(text=(
 +            "うまく読み取れませんでした。" + "と".join(miss) + "を入れてください。\n"
-+            "例: 「おとといのひる」「2日前の夜食」「10/2 昼食」"))
++            "例: 「おとといのひる」「2日前の夕食」「10/2 昼食」"))
 +    p["date"] = d
 +    p["meal_slot"] = slot
 +    p["awaiting_other"] = False
@@ -281,7 +279,7 @@ index 901fc4e..b4a9ae5 100644
          text = text.strip()
          if not text:
 diff --git a/app/services/coach.py b/app/services/coach.py
-index ce4525a..7857849 100644
+index ce4525a..eb6d691 100644
 --- a/app/services/coach.py
 +++ b/app/services/coach.py
 @@ -1,10 +1,12 @@
@@ -315,7 +313,7 @@ index ce4525a..7857849 100644
  BUCKET_JP = {"morning": "朝", "noon": "昼", "evening": "夕方",
               "night": "夜", "final": "確定"}
  
-+# 食事の登録有無を判定する区分（間食・夜食は「その他」として扱う）
++# 食事の登録有無を判定する区分（間食は「その他」として扱う）
 +MEAL_SLOTS = ("breakfast", "lunch", "dinner")
 +SLOT_ORDER = ("breakfast", "lunch", "dinner", "snack", "night")
 +
@@ -732,7 +730,7 @@ index ce4525a..7857849 100644
  
  {situation}
  {data_heading}
-@@ -220,10 +490,34 @@ def build_prompt(persona: dict, f: dict, goal_line: str = "",
+@@ -220,16 +490,67 @@ def build_prompt(persona: dict, f: dict, goal_line: str = "",
  - 体重: {f['weight_kg'] if f['weight_kg'] else '不明'}kg
  - 目的・目標: {goal_line or '未設定'}
  - 食事内容: {', '.join(f['foods']) if f['foods'] else '記録なし'}
@@ -769,7 +767,94 @@ index ce4525a..7857849 100644
  - ユーザーを責めない。「事実 → 次の一手（具体的行動）」の順で
  - 120字以内のコメント本文のみを返す（前置き・JSON・記号装飾は不要）
  """
-@@ -261,15 +555,18 @@ def _generate(user_id: str, f: dict) -> str:
+ 
+ 
++MAX_OUTPUT_TOKENS = 1024          # 思考OFFでも長文が出るよう余裕を持たせる
++_END_CHARS = "。！？!?」』）)"
++
++
++def _is_complete(t: str) -> bool:
++    """文が最後まで書けているか（句点などで終わっているか）."""
++    t = (t or "").strip()
++    return bool(t) and t[-1] in _END_CHARS
++
++
++def _trim_to_sentence(t: str) -> str:
++    """途中で切れた文を最後の句点までに切り詰める（句点が無ければ空）."""
++    t = (t or "").strip()
++    idx = max([t.rfind(c) for c in "。！？!?"] or [-1])
++    return t[:idx + 1].strip() if idx >= 0 else ""
++
++
+ def _generate(user_id: str, f: dict) -> str:
++    """日次コメントを生成する（途中切れを検出して作り直す）.
++
++    - thinkingBudget=0: 思考トークンで出力予算を使い切り、途中で切れる/
++      空になる事故を防ぐ（これが「中途半端なコメント」の主因）。
++    - maxOutputTokens=1024 で余裕を確保。
++    - finishReason が STOP 以外、または文末が句点でない場合は不完全と
++      みなし、同じモデルでもう一度生成する。
++    - それでも不完全なら、最後の句点までに切り詰めて採用（キャッシュに
++      半端な文が残らないようにする）。
++    """
+     if not _KEY:
+         raise RuntimeError("GEMINI_API_KEY 未設定")
+     persona = load_user_persona(user_id)
+@@ -239,45 +560,68 @@ def _generate(user_id: str, f: dict) -> str:
+                           directives=directives)
+     payload = {
+         "contents": [{"parts": [{"text": prompt}]}],
+-        "generationConfig": {"temperature": 0.6, "maxOutputTokens": 512},
++        "generationConfig": {
++            "temperature": 0.6,
++            "maxOutputTokens": MAX_OUTPUT_TOKENS,
++            "thinkingConfig": {"thinkingBudget": 0},
++        },
+     }
+     last_err = None
++    partial = ""
+     for model in MODELS:
+-        try:
+-            r = httpx.post(
+-                f"{API_BASE}/{model}:generateContent?key={_KEY}",
+-                json=payload, timeout=15.0)
+-            r.raise_for_status()
+-            text = (r.json()["candidates"][0]["content"]["parts"][0]["text"]
+-                    .strip())
+-            if text:
+-                return text
+-        except Exception as e:
+-            last_err = e
+-            logger.warning("coach generate failed on %s: %s", model, e)
++        for _attempt in range(2):          # 1回目が切れたらもう一度だけ
++            try:
++                r = httpx.post(
++                    f"{API_BASE}/{model}:generateContent?key={_KEY}",
++                    json=payload, timeout=15.0)
++                r.raise_for_status()
++                cand = (r.json().get("candidates") or [{}])[0]
++                parts = (cand.get("content") or {}).get("parts") or []
++                text = (parts[0].get("text", "") if parts else "").strip()
++                reason = cand.get("finishReason") or ""
++                if not text:
++                    last_err = RuntimeError(f"{model}: empty (finish={reason})")
++                    continue
++                if _is_complete(text) and reason in ("", "STOP"):
++                    return text
++                partial = partial or _trim_to_sentence(text)
++                last_err = RuntimeError(f"{model}: incomplete (finish={reason})")
++                logger.warning("coach incomplete on %s: finish=%s len=%d",
++                               model, reason, len(text))
++            except Exception as e:
++                last_err = e
++                logger.warning("coach generate failed on %s: %s", model, e)
++                break
++    if partial and len(partial) >= 20:
++        logger.warning("coach: 不完全な応答を最後の句点まで切り詰めて採用")
++        return partial
+     raise RuntimeError(f"all models failed: {last_err}")
+ 
+ 
  def get_day_comment(user_id: str, target_date: str) -> dict:
      """日次AIコメントを返す（キャッシュ優先）.
  
@@ -792,17 +877,18 @@ index ce4525a..7857849 100644
  
      try:
          cached = get_report_comment(key)
-@@ -277,7 +574,8 @@ def get_day_comment(user_id: str, target_date: str) -> dict:
+         if cached:
              comment = (cached.get("comment") if isinstance(cached, dict)
                         else cached[5])
-             if comment:
+-            if comment:
 -                return {"comment": comment, "source": "cache"}
++            if comment and _is_complete(comment):
 +                return {"comment": comment, "source": "cache",
 +                        "scenario": st.get("scenario")}
      except Exception:
          pass
  
-@@ -297,4 +595,4 @@ def get_day_comment(user_id: str, target_date: str) -> dict:
+@@ -297,4 +641,4 @@ def get_day_comment(user_id: str, target_date: str) -> dict:
              facts_json=json.dumps(facts, ensure_ascii=False))
      except Exception:
          logger.exception("cache save failed")
@@ -1169,29 +1255,26 @@ index 0000000..7d54b44
 +
 +    return (d.isoformat() if d else None), slot
 diff --git a/app/templates/day_detail.html b/app/templates/day_detail.html
-index 22c372a..f3b9e33 100644
+index 22c372a..ee2ce62 100644
 --- a/app/templates/day_detail.html
 +++ b/app/templates/day_detail.html
-@@ -89,6 +89,11 @@ function loadLiffSdk(){return new Promise((res,rej)=>{const s=document.createEle
-   <div id="loading" class="loading">読み込み中…</div>
+@@ -90,19 +90,32 @@ function loadLiffSdk(){return new Promise((res,rej)=>{const s=document.createEle
    <div id="app" style="display:none">
  
-+    <div class="card">
-+      <b>🤖 AIコーチ</b>
-+      <div class="muted" style="margin-top:4px">この日のデータを見たAIの見立て</div>
-+      <div id="aiComment" style="margin-top:6px;white-space:pre-wrap">…</div>
-+    </div>
      <div class="card">
-       <div class="muted">収支</div>
-       <div class="stat"><span id="dIntake">0</span> kcal 摂取
-@@ -98,10 +103,27 @@ function loadLiffSdk(){return new Promise((res,rej)=>{const s=document.createEle
-         <span class="muted" id="dSalt"></span></div>
-     </div>
- 
+-      <div class="muted">収支</div>
+-      <div class="stat"><span id="dIntake">0</span> kcal 摂取
+-        <span class="muted">/</span> <span id="dBurn">0</span> kcal 消費</div>
+-      <div class="pfc-line">目標: <span id="dGoal">—</span> ・ 体重 <span id="dWeightText">—</span></div>
+-      <div class="pfc-line">P <b id="dP">0</b>g ・ F <b id="dF">0</b>g ・ C <b id="dC">0</b>g
+-        <span class="muted" id="dSalt"></span></div>
+-    </div>
+-
 -    <div class="card ai">
--      <b>🤖 AIコーチ</b>
--      <div class="muted" style="margin-top:4px">この日のデータを見たAIの見立て</div>
--      <div id="aiComment" style="margin-top:6px;white-space:pre-wrap">…</div>
+       <b>🤖 AIコーチ</b>
+       <div class="muted" style="margin-top:4px">この日のデータを見たAIの見立て</div>
+       <div id="aiComment" style="margin-top:6px;white-space:pre-wrap">…</div>
+     </div>
 +    <div class="card">
 +      <b>📊 摂取と消費（目標との比較）</b>
 +      <div class="muted" style="margin-top:4px">■摂取　□消費　┆目標摂取カロリー</div>
@@ -1213,10 +1296,11 @@ index 22c372a..f3b9e33 100644
 +      </div>
 +      <div class="pfc-line" style="margin-top:6px">収支（消費−摂取）: <b id="balBalance">—</b>
 +        ・ 目標との差: <b id="balDiff">—</b></div>
-     </div>
++    </div>
  
      <div class="card">
-@@ -164,7 +186,8 @@ function loadLiffSdk(){return new Promise((res,rej)=>{const s=document.createEle
+       <b>🥧 栄養バランス</b>
+@@ -164,12 +177,15 @@ function loadLiffSdk(){return new Promise((res,rej)=>{const s=document.createEle
  const MEMBER_ID = {{ member_id | tojson }};
  const CAN_COMMENT = {{ can_comment | tojson }};
  const CAN_EDIT = {{ can_edit | tojson }};
@@ -1226,7 +1310,15 @@ index 22c372a..f3b9e33 100644
  let idToken = null;
  let curDate = {{ initial_date | tojson }} || null;   // サーバーが前日(JST)を既定で渡す
  let pieChart = null, slotChart = null;
-@@ -186,6 +209,15 @@ async function api(path, extra){
+ const SLOT_JP = {breakfast:"朝食",lunch:"昼食",dinner:"夕食",snack:"間食",night:"夜食"};
+-const SLOT_ORDER = ["breakfast","lunch","dinner","snack","night"];
++function setT(id,v){var e=document.getElementById(id); if(e) e.textContent=v;}
++const SLOT_ORDER = ["breakfast","lunch","dinner","snack","night"];   // 表示用（旧データの night を表示するため残す）
++const SLOT_PICK = ["breakfast","lunch","dinner","snack"];            // 選択肢（夜食は出さない）
+ 
+ function showErr(m){const e=document.getElementById("err");e.textContent=m;e.style.display="block";
+   document.getElementById("loading").style.display="none";}
+@@ -186,6 +202,15 @@ async function api(path, extra){
    const res = await fetch(path, {method:"POST",
      headers:{"Content-Type":"application/json"},
      body: JSON.stringify(apiBody(extra))});
@@ -1242,10 +1334,21 @@ index 22c372a..f3b9e33 100644
    if(!res.ok){let d="";try{d=(await res.json()).detail||"";}catch(_){}
      throw new Error(res.status+" "+d);}
    return res.json();
-@@ -216,6 +248,28 @@ function render(d){
-   document.getElementById("dIntake").textContent = fmt(d.intake_kcal);
-   document.getElementById("dBurn").textContent = fmt(d.burn_kcal);
-   document.getElementById("dGoal").textContent = d.target_kcal ? fmt(d.target_kcal)+" kcal" : "未設定";
+@@ -213,14 +238,36 @@ async function load(dateStr_){
+ function render(d){
+   document.getElementById("dateLabel").textContent = d.date;
+   document.getElementById("datePicker").value = d.date;
+-  document.getElementById("dIntake").textContent = fmt(d.intake_kcal);
+-  document.getElementById("dBurn").textContent = fmt(d.burn_kcal);
+-  document.getElementById("dGoal").textContent = d.target_kcal ? fmt(d.target_kcal)+" kcal" : "未設定";
+-  document.getElementById("dP").textContent = fmt(d.protein_g);
+-  document.getElementById("dF").textContent = fmt(d.fat_g);
+-  document.getElementById("dC").textContent = fmt(d.carb_g);
+-  document.getElementById("dSalt").textContent = d.salt_g ? "・ 塩分 "+fmt(d.salt_g)+"g" : "";
+-  document.getElementById("dWeightText").textContent = d.weight_kg ? d.weight_kg+"kg" : "—";
++  setT("dIntake", fmt(d.intake_kcal));
++  setT("dBurn", fmt(d.burn_kcal));
++  setT("dGoal", d.target_kcal ? fmt(d.target_kcal)+" kcal" : "未設定");
 +  // ③ 摂取・消費・目標の横バー
 +  {
 +    const _max = Math.max(d.intake_kcal||0, d.burn_kcal||0, d.target_kcal||0) * 1.15 || 1;
@@ -1268,10 +1371,24 @@ index 22c372a..f3b9e33 100644
 +      _bd.style.color = _df>=0 ? "#10b981" : "#ef4444"; }
 +    else { _bd.textContent = "—"; }
 +  }
-   document.getElementById("dP").textContent = fmt(d.protein_g);
-   document.getElementById("dF").textContent = fmt(d.fat_g);
-   document.getElementById("dC").textContent = fmt(d.carb_g);
-@@ -413,16 +467,35 @@ async function postComment(){
++  setT("dP", fmt(d.protein_g));
++  setT("dF", fmt(d.fat_g));
++  setT("dC", fmt(d.carb_g));
++  setT("dSalt", d.salt_g ? "・ 塩分 "+fmt(d.salt_g)+"g" : "");
++  setT("dWeightText", d.weight_kg ? d.weight_kg+"kg" : "—");
+   document.getElementById("aiComment").textContent =
+     (d.ai_comment && d.ai_comment.comment) || "コメントを生成できませんでした";
+ 
+@@ -371,7 +418,7 @@ function startEdit(btn, id){
+     + '<input id="e_f" type="number" step="0.1" placeholder="F g">'
+     + '<input id="e_c" type="number" step="0.1" placeholder="C g"></div>'
+     + '<div style="display:flex;gap:6px;margin-top:6px">'
+-    + '<select id="e_slot" style="flex:1">'+SLOT_ORDER.map(opt).join("")+'</select>'
++    + '<select id="e_slot" style="flex:1">'+(SLOT_PICK.concat(slot==="night"?["night"]:[])).map(opt).join("")+'</select>'
+     + '<input id="e_date" type="date" style="flex:1" max="'+todayLocalStr()+'"></div>'
+     + '<button class="btn btn-sm" style="margin-top:6px" onclick="saveEdit(this,'+id+')">保存</button> '
+     + '<button class="btn btn-ghost btn-sm" style="margin-top:6px" onclick="load()">取消</button></div>';
+@@ -413,16 +460,35 @@ async function postComment(){
  }
  {% endif %}
  
@@ -1312,22 +1429,38 @@ index 22c372a..f3b9e33 100644
    if(!curDate) curDate = DayNav.yesterdayLocal();  // 初期表示は前日
    try{ await load(curDate); }
 diff --git a/app/templates/member_home.html b/app/templates/member_home.html
-index 609743c..0402b73 100644
+index 609743c..5fd973b 100644
 --- a/app/templates/member_home.html
 +++ b/app/templates/member_home.html
-@@ -74,6 +74,11 @@ function loadLiffSdk(){
+@@ -74,12 +74,27 @@ function loadLiffSdk(){
           📅 日別の詳細を見る（記録の編集・コメント）</a>
      </div>
  
 +    <div class="card" style="display:flex;justify-content:space-between;align-items:center;padding:10px 16px">
-+      <a id="pgPrev" href="?offset=0" style="text-decoration:none;font-weight:700;font-size:20px">＜</a>
-+      <span id="pgRange" class="muted" style="font-size:13px"></span>
-+      <a id="pgNext" href="?offset=1" style="text-decoration:none;font-weight:700;font-size:20px">＞</a>
++      {% if nav and nav.show_past %}
++      <a id="pgPast" href="{{ nav.past_href }}" style="text-decoration:none;font-weight:700;font-size:15px">＜ 過去</a>
++      {% else %}<span style="width:64px"></span>{% endif %}
++      <span id="pgRange" class="muted" style="font-size:13px">{{ nav.range if nav else "" }}</span>
++      {% if nav and nav.show_future %}
++      <a id="pgFuture" href="{{ nav.future_href }}" style="text-decoration:none;font-weight:700;font-size:15px">未来 ＞</a>
++      {% else %}<span style="width:64px"></span>{% endif %}
 +    </div>
      <div class="card">
        <b>📈 カロリー推移（14日）</b>
        <canvas id="calChart" height="160"></canvas>
-@@ -108,6 +113,13 @@ function showErr(msg){
+     </div>
+     <div class="card">
+       <b>⚖️ 体重推移（14日）</b>
++      <div class="pfc-line" style="margin-top:4px">
++        現在の体重: <b id="wCurrent">—</b>
++        <span class="muted" id="wCurrentDate"></span>
++        　／　増減（14日前比）: <b id="wDelta">—</b>
++        <span class="muted" id="wBaseDate"></span>
++      </div>
+       <canvas id="weightChart" height="130"></canvas>
+     </div>
+ 
+@@ -108,13 +123,30 @@ function showErr(msg){
    const e = document.getElementById("err");
    e.textContent = msg; e.style.display = "block";
    document.getElementById("loading").style.display = "none";
@@ -1340,10 +1473,12 @@ index 609743c..0402b73 100644
 +  }
  }
  
- async function api(path){
-@@ -115,6 +127,16 @@ async function api(path){
+-async function api(path){
++async function api(path, body){
+   const res = await fetch(path, {
      method: "POST", headers: {"Content-Type": "application/json"},
-     body: JSON.stringify({id_token: idToken})
+-    body: JSON.stringify({id_token: idToken})
++    body: JSON.stringify(Object.assign({id_token: idToken}, body || {}))
    });
 +  if(res.status === 401){
 +    // IDトークンの期限切れ。1回だけ取り直して再ログインさせる
@@ -1358,7 +1493,7 @@ index 609743c..0402b73 100644
    if(!res.ok){
      let detail = "";
      try { detail = (await res.json()).detail || ""; } catch(_) {}
-@@ -126,6 +148,25 @@ async function api(path){
+@@ -126,6 +158,25 @@ async function api(path){
  
  function fmt(v){ return Math.round(v || 0); }
  
@@ -1384,7 +1519,7 @@ index 609743c..0402b73 100644
  async function main(){
    try {
      await loadLiffSdk();
-@@ -142,12 +183,16 @@ async function main(){
+@@ -142,12 +193,14 @@ async function main(){
              " / LIFF_ID=" + LIFF_ID);
      return;
    }
@@ -1395,18 +1530,43 @@ index 609743c..0402b73 100644
 +  if(!await ensureLogin()) return;
  
 -  const s = await api("/api/me/summary");
++  // 期間ナビはサーバ側で ?offset= から描画済み。ここではデータ取得にだけ使う
 +  const _off = Math.max(0, Math.min(3, parseInt(new URLSearchParams(location.search).get("offset") || "0", 10) || 0));
 +  const s = await api("/api/me/summary", {days: 14, offset: _off});
-+  const _pg = document.getElementById("pgRange");
-+  if(_pg){ _pg.textContent = (s.window_start||"") + " 〜 " + (s.window_end||"");
-+    document.getElementById("pgPrev").setAttribute("href", "?offset=" + Math.max(0, _off-1));
-+    document.getElementById("pgNext").setAttribute("href", "?offset=" + (_off+1));
-+    if(_off<=0) document.getElementById("pgPrev").style.visibility="hidden";
-+    if(_off>=3) document.getElementById("pgNext").style.visibility="hidden"; }
++  { const _pg = document.getElementById("pgRange");
++    if(_pg && s.window_start && s.window_end){
++      _pg.textContent = s.window_start + " 〜 " + s.window_end; } }
    document.getElementById("tIntake").textContent = fmt(s.today.intake_kcal);
    document.getElementById("tBurn").textContent =
      fmt(s.today.burn_kcal || s.today.burn);
-@@ -194,7 +239,7 @@ async function main(){
+@@ -182,6 +235,26 @@ async function main(){
+     options: wopts
+   });
+ 
++  // 体重の数値（現在値と14日前からの増減）
++  {
++    const wc = document.getElementById("wCurrent");
++    if(wc) wc.textContent = (s.weight_current == null) ? "—"
++      : s.weight_current.toFixed(1) + " kg";
++    const wcd = document.getElementById("wCurrentDate");
++    if(wcd) wcd.textContent = s.weight_current_date ? "(" + s.weight_current_date + ")" : "";
++    const wd = document.getElementById("wDelta");
++    if(wd){
++      if(s.weight_delta == null){ wd.textContent = "—"; }
++      else {
++        const d = s.weight_delta;
++        wd.textContent = (d > 0 ? "+" : "") + d.toFixed(1) + " kg";
++        wd.style.color = d > 0 ? "#ef4444" : (d < 0 ? "#10b981" : "inherit");
++      }
++    }
++    const wbd = document.getElementById("wBaseDate");
++    if(wbd) wbd.textContent = s.weight_base_date ? "基準 " + s.weight_base_date : "";
++  }
++
+   new Chart(document.getElementById("pfcChart"), {
+     type:"bar",
+     data:{ labels:s.labels, datasets:[
+@@ -194,7 +267,7 @@ async function main(){
    });
  
    // コメント
@@ -1415,7 +1575,7 @@ index 609743c..0402b73 100644
    const pc = document.getElementById("paneComments");
    pc.innerHTML = c.comments.length ? "" : '<p class="muted">まだコメントはありません。</p>';
    for(const cm of c.comments){
-@@ -208,6 +253,34 @@ async function main(){
+@@ -208,6 +281,34 @@ async function main(){
      div.querySelector("div").textContent = cm.body;
      pc.appendChild(div);
    }
@@ -1468,11 +1628,68 @@ index fc9e48b..8977e3e 100644
    </div>
  </div>
  
+diff --git a/app/web/day.py b/app/web/day.py
+index 9188ea9..19ce728 100644
+--- a/app/web/day.py
++++ b/app/web/day.py
+@@ -177,7 +177,7 @@ def day_entry_ops(body: EntryOpIn, request: Request):
+         if body.meal_slot not in ALLOWED_SLOTS:
+             raise HTTPException(
+                 status_code=400,
+-                detail="区分は 朝食/昼食/夕食/間食/夜食 から選んでください")
++                detail="区分は 朝食/昼食/夕食/間食 から選んでください")
+         # 日付は実在する日付・未来日不可（未指定なら日付は変更しない）
+         new_date = (body.date or "").strip() or None
+         if new_date:
 diff --git a/app/web/member.py b/app/web/member.py
-index 00342e0..ba0f12d 100644
+index 00342e0..06883ce 100644
 --- a/app/web/member.py
 +++ b/app/web/member.py
-@@ -46,6 +46,8 @@ def _verify_uid(id_token: str) -> str:
+@@ -9,7 +9,7 @@ import logging
+ from datetime import date, timedelta
+ from pathlib import Path
+ 
+-from fastapi import APIRouter, HTTPException
++from fastapi import APIRouter, HTTPException, Request
+ from fastapi.responses import HTMLResponse
+ from fastapi.templating import Jinja2Templates
+ from pydantic import BaseModel
+@@ -43,18 +43,71 @@ def _verify_uid(id_token: str) -> str:
+     return uid
+ 
+ 
++PAGE_DAYS = 14      # 1ページ＝14日
++MAX_OFFSET = 3      # 何ページ前まで遡れるか
++
++
++def _window(days: int, offset: int):
++    """(start, end) を返す。offset=0 が直近、増えるほど過去へ遡る."""
++    days = max(1, min(int(days), 90))
++    offset = max(0, min(int(offset), 52))
++    end = today_jst_date() - timedelta(days=offset * days)
++    start = end - timedelta(days=days - 1)
++    return start, end
++
++
++def _weight_stats(series):
++    """期間内の体重から「現在値」と「期間初日（14日前）からの増減」を出す.
++
++    記録が無い日は fetch_weight_series が直前の値で繰越済みなので、
++    14日前ちょうどの記録が無くても「その日以前の直近値」が入る。
++    """
++    vals = [(str(w.get("date") or "")[:10], w.get("weight_kg"))
++            for w in (series or [])]
++    vals = [(d, v) for d, v in vals if v is not None]
++    if not vals:
++        return {"current": None, "base": None, "delta": None,
++                "current_date": None, "base_date": None}
++    base_date, base = vals[0]
++    cur_date, cur = vals[-1]
++    return {"current": round(float(cur), 1), "base": round(float(base), 1),
++            "delta": round(float(cur) - float(base), 1),
++            "current_date": cur_date, "base_date": base_date}
++
++
  class TokenIn(BaseModel):
      id_token: str
      days: int = 14
@@ -1481,7 +1698,39 @@ index 00342e0..ba0f12d 100644
  
  
  @router.get("/me", response_class=HTMLResponse)
-@@ -62,18 +64,24 @@ def me_summary(body: TokenIn):
+-def member_home():
+-    """LIFFのエンドポイント。LIFF_IDはテンプレートに埋め込む."""
++def member_home(request: Request, offset: int = 0):
++    """LIFFのエンドポイント。LIFF_IDはテンプレートに埋め込む.
++
++    期間ナビ（＜過去 / 未来＞）はサーバ側で描画する。
++    offset が増えるほど過去へ遡る（offset=0 が直近14日）。
++    """
+     if not settings.LIFF_ID:
+         raise HTTPException(status_code=503, detail="LIFFが未設定です")
+-    return templates.TemplateResponse(
+-        "member_home.html", {"request": {}, "liff_id": settings.LIFF_ID})
++    off = max(0, min(int(offset), MAX_OFFSET))
++    start, end = _window(PAGE_DAYS, off)
++    nav = {
++        "offset": off,
++        "max_offset": MAX_OFFSET,
++        "past_href": f"?offset={off + 1}",                 # ＜ 過去
++        "future_href": f"?offset={max(0, off - 1)}",       # 未来 ＞
++        "show_past": off < MAX_OFFSET,
++        "show_future": off > 0,
++        "range": f"{start.isoformat()} 〜 {end.isoformat()}",
++    }
++    ctx = {"request": request, "liff_id": settings.LIFF_ID, "nav": nav}
++    try:      # Starlette 0.29+ は (request, name, context)
++        return templates.TemplateResponse(
++            request=request, name="member_home.html", context=ctx)
++    except TypeError:  # 旧Starletteは (name, context)
++        return templates.TemplateResponse("member_home.html", ctx)
+ 
+ 
+ @router.post("/api/me/summary")
+@@ -62,20 +115,31 @@ def me_summary(body: TokenIn):
      """自分のカロリー推移・体重推移（グラフ用JSON）."""
      uid = _verify_uid(body.id_token)
      days = max(1, min(body.days, 90))
@@ -1490,8 +1739,7 @@ index 00342e0..ba0f12d 100644
      today = today_jst_date()
 -    for i in range(days - 1, -1, -1):
 -        d = (today - timedelta(days=i)).isoformat()
-+    end = today - timedelta(days=offset * days)
-+    start = end - timedelta(days=days - 1)
++    start, end = _window(days, offset)
 +    for i in range(days):
 +        d = (start + timedelta(days=i)).isoformat()
          s = fetch_day_summary(uid, d)
@@ -1503,13 +1751,21 @@ index 00342e0..ba0f12d 100644
 +    w_all = fetch_weight_series(uid, days=days * (offset + 1)) or []
 +    _s, _e = start.isoformat(), end.isoformat()
 +    wseries = [w for w in w_all if _s <= str(w.get("date") or "")[:10] <= _e]
++    wst = _weight_stats(wseries)
      return {
          "labels": labels, "intake": intake, "burn": burn,
 +        "window_start": _s, "window_end": _e, "offset": offset,
          "weight_labels": [(w.get("date") or "")[5:] for w in wseries],
          "weight": [w.get("weight_kg") for w in wseries],
++        "weight_current": wst["current"],
++        "weight_base": wst["base"],
++        "weight_delta": wst["delta"],
++        "weight_current_date": wst["current_date"],
++        "weight_base_date": wst["base_date"],
          "today": fetch_day_summary(uid, today.isoformat()),
-@@ -90,9 +98,14 @@ def me_history(body: TokenIn):
+         **pfc_percent_series(pfc),
+     }
+@@ -90,9 +154,14 @@ def me_history(body: TokenIn):
  
  @router.post("/api/me/comments")
  def me_comments(body: TokenIn):
@@ -1822,6 +2078,40 @@ index 0000000..bc25d5e
 +    f = coach._build_facts("U1", "2026-09-28")
 +    assert f["remaining_kcal"] == 288
 +    assert f["balance_kcal"] == 1512 - 2760
+diff --git a/tests/test_comment_completeness.py b/tests/test_comment_completeness.py
+new file mode 100644
+index 0000000..c536369
+--- /dev/null
++++ b/tests/test_comment_completeness.py
+@@ -0,0 +1,28 @@
++"""AIコメントが途中で切れていないかの判定ロジックのテスト."""
++
++from app.services.coach import _is_complete, _trim_to_sentence
++
++
++def test_complete_when_ends_with_kuten():
++    assert _is_complete("今日はいい感じです。") is True
++    assert _is_complete("すごい！") is True
++    assert _is_complete("その調子」") is True
++
++
++def test_incomplete_when_cut_off():
++    assert _is_complete("今日はいい感じで") is False
++    assert _is_complete("") is False
++    assert _is_complete("   ") is False
++
++
++def test_trim_keeps_last_sentence():
++    assert _trim_to_sentence("Aです。Bです。Cで") == "Aです。Bです。"
++
++
++def test_trim_returns_empty_when_no_kuten():
++    assert _trim_to_sentence("Cで") == ""
++
++
++def test_trim_handles_question_and_exclamation():
++    assert _trim_to_sentence("いいね！でもここから") == "いいね！"
++    assert _trim_to_sentence("どう？まだ続") == "どう？"
 diff --git a/tests/test_comment_paging.py b/tests/test_comment_paging.py
 new file mode 100644
 index 0000000..9e13685
@@ -2379,6 +2669,141 @@ index 0000000..c91a9f2
 +
 +def test_yesterday_snack():
 +    assert parse_meal_when("昨日のおやつ") == (iso(1), "snack")
+diff --git a/tests/test_member_period.py b/tests/test_member_period.py
+new file mode 100644
+index 0000000..7494204
+--- /dev/null
++++ b/tests/test_member_period.py
+@@ -0,0 +1,129 @@
++"""マイ記録ページの期間ナビ（＜過去 / 未来＞）と体重数値のテスト."""
++
++import os
++import sys
++import tempfile
++from pathlib import Path
++
++os.environ["DB_PATH"] = str(Path(tempfile.mkdtemp()) / "period.db")
++os.environ["TURSO_DATABASE_URL"] = ""
++sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
++
++from app.services.dates import today_jst_date  # noqa: E402
++from app.web import member  # noqa: E402
++
++TPL = Path(__file__).resolve().parents[1] / "app/templates/member_home.html"
++
++
++# ---- 期間の計算（offset → 日付範囲） ----
++
++def test_window_latest_is_last_14_days():
++    s, e = member._window(14, 0)
++    assert e == today_jst_date()
++    assert (e - s).days == 13
++
++
++def test_window_offset1_is_strictly_past():
++    s0, e0 = member._window(14, 0)
++    s1, e1 = member._window(14, 1)
++    assert e1 < s0                 # 1ページ前は直近ウィンドウより完全に過去
++    assert (s0 - e1).days == 1     # 隙間なく連続
++    assert (e1 - s1).days == 13
++
++
++def test_past_arrow_goes_to_older_dates():
++    # ＜（過去）= offset+1、＞（未来）= offset-1 が「過去/未来」と一致する
++    _, e_past = member._window(14, 1)
++    _, e_future = member._window(14, 0)
++    assert e_past < e_future
++
++
++def test_window_clamped():
++    assert member._window(14, -5) == member._window(14, 0)
++
++
++# ---- 体重の現在値と増減 ----
++
++def test_weight_stats_normal():
++    st = member._weight_stats([
++        {"date": "2026-09-20", "weight_kg": 70.0},
++        {"date": "2026-09-25", "weight_kg": 69.5},
++        {"date": "2026-10-03", "weight_kg": 68.2}])
++    assert st["current"] == 68.2 and st["base"] == 70.0
++    assert st["delta"] == -1.8
++    assert st["base_date"] == "2026-09-20" and st["current_date"] == "2026-10-03"
++
++
++def test_weight_stats_skips_missing_values():
++    st = member._weight_stats([
++        {"date": "2026-09-20", "weight_kg": None},
++        {"date": "2026-09-21", "weight_kg": 70.0},
++        {"date": "2026-10-03", "weight_kg": None}])
++    assert st["base"] == 70.0 and st["current"] == 70.0 and st["delta"] == 0.0
++
++
++def test_weight_stats_empty():
++    st = member._weight_stats([])
++    assert st["current"] is None and st["delta"] is None
++    assert st["base_date"] is None
++
++
++def test_weight_stats_single_point():
++    st = member._weight_stats([{"date": "2026-10-03", "weight_kg": 65.0}])
++    assert st["current"] == 65.0 and st["delta"] == 0.0
++
++
++def test_weight_stats_gain_is_positive():
++    st = member._weight_stats([{"date": "2026-09-20", "weight_kg": 65.0},
++                               {"date": "2026-10-03", "weight_kg": 66.4}])
++    assert st["delta"] == 1.4
++
++
++# ---- 描画された HTML（実出力）でナビを確認 ----
++
++def _req():
++    from starlette.requests import Request
++    return Request({"type": "http", "method": "GET", "path": "/me",
++                    "headers": [], "query_string": b""})
++
++
++def _render(offset):
++    orig = member.settings.LIFF_ID
++    member.settings.LIFF_ID = "2000000000-abcdefgh"
++    try:
++        return member.member_home(request=_req(), offset=offset).body.decode("utf-8")
++    finally:
++        member.settings.LIFF_ID = orig
++
++
++def test_rendered_offset0_shows_only_past_arrow():
++    html = _render(0)
++    assert 'id="pgPast"' in html and 'href="?offset=1"' in html
++    assert 'id="pgFuture"' not in html          # 直近表示では未来へ進めない
++    assert member._window(14, 0)[0].isoformat() in html
++
++
++def test_rendered_offset1_moves_to_past_and_shows_both():
++    html = _render(1)
++    assert 'id="pgPast"' in html and 'href="?offset=2"' in html
++    assert 'id="pgFuture"' in html and 'href="?offset=0"' in html
++    start, end = member._window(14, 1)
++    assert start.isoformat() in html and end.isoformat() in html
++    assert end.isoformat() != member._window(14, 0)[1].isoformat()
++
++
++def test_rendered_range_differs_between_offsets():
++    r0 = _render(0)
++    r1 = _render(1)
++    assert member._window(14, 0)[1].isoformat() in r0
++    assert member._window(14, 0)[1].isoformat() not in r1
++
++
++# ---- 期間が動かなかった根本原因の再発防止（JSがpayloadを送る） ----
++
++def test_api_forwards_payload_to_server():
++    src = TPL.read_text(encoding="utf-8")
++    assert "async function api(path, body)" in src
++    assert "Object.assign({id_token: idToken}, body || {})" in src
++    assert 'api("/api/me/summary", {days: 14, offset: _off})' in src
++    assert "pgPrev" not in src and "pgNext" not in src   # 旧JSの取り違えを排除
 diff --git a/tests/test_night_slot.py b/tests/test_night_slot.py
 new file mode 100644
 index 0000000..839a018

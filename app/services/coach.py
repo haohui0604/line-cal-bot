@@ -37,7 +37,7 @@ API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 BUCKET_JP = {"morning": "朝", "noon": "昼", "evening": "夕方",
              "night": "夜", "final": "確定"}
 
-# 食事の登録有無を判定する区分（間食・夜食は「その他」として扱う）
+# 食事の登録有無を判定する区分（間食は「その他」として扱う）
 MEAL_SLOTS = ("breakfast", "lunch", "dinner")
 SLOT_ORDER = ("breakfast", "lunch", "dinner", "snack", "night")
 
@@ -523,7 +523,34 @@ def build_prompt(persona: dict, f: dict, goal_line: str = "",
 """
 
 
+MAX_OUTPUT_TOKENS = 1024          # 思考OFFでも長文が出るよう余裕を持たせる
+_END_CHARS = "。！？!?」』）)"
+
+
+def _is_complete(t: str) -> bool:
+    """文が最後まで書けているか（句点などで終わっているか）."""
+    t = (t or "").strip()
+    return bool(t) and t[-1] in _END_CHARS
+
+
+def _trim_to_sentence(t: str) -> str:
+    """途中で切れた文を最後の句点までに切り詰める（句点が無ければ空）."""
+    t = (t or "").strip()
+    idx = max([t.rfind(c) for c in "。！？!?"] or [-1])
+    return t[:idx + 1].strip() if idx >= 0 else ""
+
+
 def _generate(user_id: str, f: dict) -> str:
+    """日次コメントを生成する（途中切れを検出して作り直す）.
+
+    - thinkingBudget=0: 思考トークンで出力予算を使い切り、途中で切れる/
+      空になる事故を防ぐ（これが「中途半端なコメント」の主因）。
+    - maxOutputTokens=1024 で余裕を確保。
+    - finishReason が STOP 以外、または文末が句点でない場合は不完全と
+      みなし、同じモデルでもう一度生成する。
+    - それでも不完全なら、最後の句点までに切り詰めて採用（キャッシュに
+      半端な文が残らないようにする）。
+    """
     if not _KEY:
         raise RuntimeError("GEMINI_API_KEY 未設定")
     persona = load_user_persona(user_id)
@@ -533,22 +560,41 @@ def _generate(user_id: str, f: dict) -> str:
                           directives=directives)
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.6, "maxOutputTokens": 512},
+        "generationConfig": {
+            "temperature": 0.6,
+            "maxOutputTokens": MAX_OUTPUT_TOKENS,
+            "thinkingConfig": {"thinkingBudget": 0},
+        },
     }
     last_err = None
+    partial = ""
     for model in MODELS:
-        try:
-            r = httpx.post(
-                f"{API_BASE}/{model}:generateContent?key={_KEY}",
-                json=payload, timeout=15.0)
-            r.raise_for_status()
-            text = (r.json()["candidates"][0]["content"]["parts"][0]["text"]
-                    .strip())
-            if text:
-                return text
-        except Exception as e:
-            last_err = e
-            logger.warning("coach generate failed on %s: %s", model, e)
+        for _attempt in range(2):          # 1回目が切れたらもう一度だけ
+            try:
+                r = httpx.post(
+                    f"{API_BASE}/{model}:generateContent?key={_KEY}",
+                    json=payload, timeout=15.0)
+                r.raise_for_status()
+                cand = (r.json().get("candidates") or [{}])[0]
+                parts = (cand.get("content") or {}).get("parts") or []
+                text = (parts[0].get("text", "") if parts else "").strip()
+                reason = cand.get("finishReason") or ""
+                if not text:
+                    last_err = RuntimeError(f"{model}: empty (finish={reason})")
+                    continue
+                if _is_complete(text) and reason in ("", "STOP"):
+                    return text
+                partial = partial or _trim_to_sentence(text)
+                last_err = RuntimeError(f"{model}: incomplete (finish={reason})")
+                logger.warning("coach incomplete on %s: finish=%s len=%d",
+                               model, reason, len(text))
+            except Exception as e:
+                last_err = e
+                logger.warning("coach generate failed on %s: %s", model, e)
+                break
+    if partial and len(partial) >= 20:
+        logger.warning("coach: 不完全な応答を最後の句点まで切り詰めて採用")
+        return partial
     raise RuntimeError(f"all models failed: {last_err}")
 
 
@@ -573,7 +619,7 @@ def get_day_comment(user_id: str, target_date: str) -> dict:
         if cached:
             comment = (cached.get("comment") if isinstance(cached, dict)
                        else cached[5])
-            if comment:
+            if comment and _is_complete(comment):
                 return {"comment": comment, "source": "cache",
                         "scenario": st.get("scenario")}
     except Exception:

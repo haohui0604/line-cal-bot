@@ -95,15 +95,6 @@ function loadLiffSdk(){return new Promise((res,rej)=>{const s=document.createEle
       <div id="aiComment" style="margin-top:6px;white-space:pre-wrap">…</div>
     </div>
     <div class="card">
-      <div class="muted">収支</div>
-      <div class="stat"><span id="dIntake">0</span> kcal 摂取
-        <span class="muted">/</span> <span id="dBurn">0</span> kcal 消費</div>
-      <div class="pfc-line">目標: <span id="dGoal">—</span> ・ 体重 <span id="dWeightText">—</span></div>
-      <div class="pfc-line">P <b id="dP">0</b>g ・ F <b id="dF">0</b>g ・ C <b id="dC">0</b>g
-        <span class="muted" id="dSalt"></span></div>
-    </div>
-
-    <div class="card">
       <b>📊 摂取と消費（目標との比較）</b>
       <div class="muted" style="margin-top:4px">■摂取　□消費　┆目標摂取カロリー</div>
       <div id="balBars" style="position:relative;display:grid;grid-template-columns:34px 1fr 78px;gap:6px;align-items:center;margin-top:8px">
@@ -192,7 +183,9 @@ let idToken = null;
 let curDate = {{ initial_date | tojson }} || null;   // サーバーが前日(JST)を既定で渡す
 let pieChart = null, slotChart = null;
 const SLOT_JP = {breakfast:"朝食",lunch:"昼食",dinner:"夕食",snack:"間食",night:"夜食"};
-const SLOT_ORDER = ["breakfast","lunch","dinner","snack","night"];
+function setT(id,v){var e=document.getElementById(id); if(e) e.textContent=v;}
+const SLOT_ORDER = ["breakfast","lunch","dinner","snack","night"];   // 表示用（旧データの night を表示するため残す）
+const SLOT_PICK = ["breakfast","lunch","dinner","snack"];            // 選択肢（夜食は出さない）
 
 function showErr(m){const e=document.getElementById("err");e.textContent=m;e.style.display="block";
   document.getElementById("loading").style.display="none";}
@@ -245,9 +238,9 @@ async function load(dateStr_){
 function render(d){
   document.getElementById("dateLabel").textContent = d.date;
   document.getElementById("datePicker").value = d.date;
-  document.getElementById("dIntake").textContent = fmt(d.intake_kcal);
-  document.getElementById("dBurn").textContent = fmt(d.burn_kcal);
-  document.getElementById("dGoal").textContent = d.target_kcal ? fmt(d.target_kcal)+" kcal" : "未設定";
+  setT("dIntake", fmt(d.intake_kcal));
+  setT("dBurn", fmt(d.burn_kcal));
+  setT("dGoal", d.target_kcal ? fmt(d.target_kcal)+" kcal" : "未設定");
   // ③ 摂取・消費・目標の横バー
   {
     const _max = Math.max(d.intake_kcal||0, d.burn_kcal||0, d.target_kcal||0) * 1.15 || 1;
@@ -270,11 +263,11 @@ function render(d){
       _bd.style.color = _df>=0 ? "#10b981" : "#ef4444"; }
     else { _bd.textContent = "—"; }
   }
-  document.getElementById("dP").textContent = fmt(d.protein_g);
-  document.getElementById("dF").textContent = fmt(d.fat_g);
-  document.getElementById("dC").textContent = fmt(d.carb_g);
-  document.getElementById("dSalt").textContent = d.salt_g ? "・ 塩分 "+fmt(d.salt_g)+"g" : "";
-  document.getElementById("dWeightText").textContent = d.weight_kg ? d.weight_kg+"kg" : "—";
+  setT("dP", fmt(d.protein_g));
+  setT("dF", fmt(d.fat_g));
+  setT("dC", fmt(d.carb_g));
+  setT("dSalt", d.salt_g ? "・ 塩分 "+fmt(d.salt_g)+"g" : "");
+  setT("dWeightText", d.weight_kg ? d.weight_kg+"kg" : "—");
   document.getElementById("aiComment").textContent =
     (d.ai_comment && d.ai_comment.comment) || "コメントを生成できませんでした";
 
@@ -425,7 +418,7 @@ function startEdit(btn, id){
     + '<input id="e_f" type="number" step="0.1" placeholder="F g">'
     + '<input id="e_c" type="number" step="0.1" placeholder="C g"></div>'
     + '<div style="display:flex;gap:6px;margin-top:6px">'
-    + '<select id="e_slot" style="flex:1">'+SLOT_ORDER.map(opt).join("")+'</select>'
+    + '<select id="e_slot" style="flex:1">'+(SLOT_PICK.concat(slot==="night"?["night"]:[])).map(opt).join("")+'</select>'
     + '<input id="e_date" type="date" style="flex:1" max="'+todayLocalStr()+'"></div>'
     + '<button class="btn btn-sm" style="margin-top:6px" onclick="saveEdit(this,'+id+')">保存</button> '
     + '<button class="btn btn-ghost btn-sm" style="margin-top:6px" onclick="load()">取消</button></div>';
