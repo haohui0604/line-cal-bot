@@ -212,7 +212,8 @@ def test_page_script_has_no_escaped_quote_bug():
     """JS を壊す \\" が無いこと（全ボタン無反応の再発防止）."""
     script = _script_of(_admin_html())
     assert '\\"' not in script
-    for fn in ("post", "createGym", "delGym", "inviteAdmin", "loadStaff",
+    assert "UI.run" in script and "UI.showCode" in script
+    for fn in ("createGym", "delGym", "inviteAdmin", "loadStaff",
                "rmMember", "addAdmin", "rmAdmin"):
         assert ("function " + fn) in script, fn
 

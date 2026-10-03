@@ -1,0 +1,183 @@
+<!doctype html><html lang="ja"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ジム管理</title>
+<script src="/static/ui.js"></script>
+<style>
+ :root{--g:#06c755;--bg:#f5f6f8;--line:#e3e5e8;--mut:#8a8f98}
+ body{margin:0;background:var(--bg);font-family:system-ui,-apple-system,"Hiragino Sans",sans-serif;color:#1b1d21}
+ header{background:#1b1d21;color:#fff;padding:14px 18px;display:flex;justify-content:space-between;align-items:center}
+ main{max-width:1080px;margin:0 auto;padding:18px}
+ .card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:14px}
+ h2{font-size:15px;margin:0 0 10px}
+ .mut{color:var(--mut);font-size:12px}
+ table{width:100%;border-collapse:collapse;font-size:13px}
+ th,td{border-bottom:1px solid var(--line);padding:7px 6px;text-align:left;vertical-align:top}
+ th{color:var(--mut);font-weight:600;font-size:12px}
+ input,select,button{font:inherit;padding:8px 10px;border-radius:8px;border:1px solid var(--line)}
+ button{background:var(--g);color:#fff;border:none;cursor:pointer}
+ button.warn{background:#e5484d}
+ button.ghost{background:#fff;color:#1b1d21;border:1px solid var(--line)}
+ code{background:#f0f2f5;padding:2px 6px;border-radius:6px;font-size:12px}
+ .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+ .tabs a{display:inline-block;padding:7px 12px;border-radius:8px;text-decoration:none;color:#1b1d21;border:1px solid var(--line);margin-right:6px;background:#fff;font-size:13px}
+ .tabs a.on{background:#1b1d21;color:#fff;border-color:#1b1d21}
+ .del{color:#b0b4bb}
+</style></head><body>
+<header><b>ジム管理</b><span class="mut">{{ me }}</span></header>
+<main>
+
+<div class="card">
+  <h2>ジム情報</h2>
+  <table>
+    <tr><th>ジム名</th><td>{{ gym.name }}</td></tr>
+    <tr><th>ジムID</th><td><code>{{ gym.id }}</code></td></tr>
+    <tr><th>入会コード</th>
+        <td><code id="joinCode">{{ gym.join_code }}</code>
+            <button class="ghost" onclick="UI.copy(document.getElementById('joinCode').textContent)">コピー</button>
+            <span class="mut">会員がLINEでこのコードを送ると入会申請できます</span></td></tr>
+  </table>
+  {% if admin_gyms|length > 1 %}
+  <div class="row" style="margin-top:10px">
+    <span class="mut">管理ジム:</span>
+    {% for a in admin_gyms %}
+    <a href="/gym?gym_id={{ a.gym_id }}" style="text-decoration:none">
+      <button class="{% if a.gym_id == gym.id %}ghost{% endif %}">{{ a.gym_name }}</button></a>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>トレーナー（{{ staff|length }}名）</h2>
+  <div class="row" style="margin-bottom:10px">
+    <button onclick="inviteTrainer(this)">トレーナーを招待</button>
+    <span class="mut">発行した招待IDを相手に伝えてください（7日間有効）</span>
+  </div>
+  <table>
+    <tr><th>名前</th><th>user ID</th><th>役割</th><th>状態</th><th>担当会員</th><th>操作</th></tr>
+    {% for t in staff %}
+    <tr>
+      <td class="{{ 'del' if t.status != 'active' else '' }}">{{ t.display_name or "(未設定)" }}</td>
+      <td><code>{{ t.user_id }}</code></td>
+      <td>{{ "ジム管理者" if t.role == "gym_admin" else "トレーナー" }}</td>
+      <td>{{ t.status }}</td>
+      <td>{{ t.member_count }}名</td>
+      <td>
+        {% if t.status == 'active' %}
+        <button class="warn" onclick="removeStaff(this, {{ t.membership_id }}, {{ t.member_count }})">解除</button>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  <p class="mut">担当会員が残っているトレーナーは解除できません（先に担当を移管してください）。</p>
+</div>
+
+<div class="card">
+  <h2>入会申請（未処理 {{ pending|length }}件）</h2>
+  {% if pending %}
+  <table>
+    <tr><th>名前</th><th>user ID</th><th>申請日</th></tr>
+    {% for r in pending %}
+    <tr><td>{{ r.display_name or "(未設定)" }}</td><td><code>{{ r.user_id }}</code></td>
+        <td class="mut">{{ r.created_at }}</td></tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+  <div class="row" style="margin-top:10px">
+    <a href="/trainer/requests" style="text-decoration:none"><button>申請を承認・否認する</button></a>
+    <span class="mut">承認した人がその会員の担当トレーナーになります</span>
+  </div>
+</div>
+
+<div class="card">
+  <h2>会員（{{ member_count }}名）</h2>
+  <div class="tabs" style="margin-bottom:10px">
+    <a href="/gym?gym_id={{ gym.id }}&mine=0" class="{{ 'on' if not mine else '' }}">すべて</a>
+    <a href="/gym?gym_id={{ gym.id }}&mine=1" class="{{ 'on' if mine else '' }}">自分の担当のみ</a>
+  </div>
+  <table>
+    <tr><th>名前</th><th>担当トレーナー</th><th>変更</th><th>操作</th></tr>
+    {% for m in members %}
+    <tr>
+      <td>{{ m.display_name or "(未設定)" }}<div class="mut">{{ m.user_id }}</div></td>
+      <td>{{ m.trainer_name or "—" }}</td>
+      <td>
+        <select id="tr{{ m.membership_id }}">
+          <option value="">（未割当）</option>
+          {% for t in trainers %}
+          <option value="{{ t.user_id }}" {% if t.user_id == m.trainer_id %}selected{% endif %}>
+            {{ t.display_name or t.user_id }}{% if t.role == "gym_admin" %}（管理者）{% endif %}
+          </option>
+          {% endfor %}
+        </select>
+        <button class="ghost" onclick="changeTrainer(this, {{ m.membership_id }})">変更</button>
+      </td>
+      <td><button class="warn" onclick="removeMember(this, {{ m.membership_id }})">解除</button></td>
+    </tr>
+    {% endfor %}
+    {% if not members %}
+    <tr><td colspan="4" class="mut">該当する会員がいません。</td></tr>
+    {% endif %}
+  </table>
+  <p class="mut">同一ジムのスタッフは会員データを閲覧できます。会員詳細・コメントは「トレーナー画面」から開けます。</p>
+  <div class="row" style="margin-top:8px">
+    <a href="/trainer" style="text-decoration:none"><button class="ghost">トレーナー画面（会員一覧）へ</button></a>
+  </div>
+</div>
+
+<div class="card">
+  <h2>自分が担当する会員からのコメント（{{ my_comment_total }}件）</h2>
+  {% if my_comments %}
+  <table>
+    <tr><th>日時</th><th>会員</th><th>宛日</th><th>内容</th></tr>
+    {% for c in my_comments %}
+    <tr><td class="mut">{{ c.created_at }}</td><td>{{ c.member_name or c.user_id }}</td>
+        <td class="mut">{{ c.target_date or "" }}</td><td>{{ c.body }}</td></tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="mut">まだコメントはありません。</p>
+  {% endif %}
+</div>
+
+</main>
+<script>
+async function inviteTrainer(btn){
+  await UI.run(btn, async () => {
+    const j = await UI.post("/api/gym/trainers/invite", {gym_id: {{ gym.id }}});
+    UI.showCode("トレーナーの招待ID（7日間有効）", j.code);
+    UI.toast("招待IDを発行しました");
+  });
+}
+async function removeStaff(btn, mid, count){
+  if(count > 0){
+    UI.toast("担当会員が" + count + "名います。先に移管してください", false);
+    return;
+  }
+  if(!confirm("このトレーナーを解除しますか？")) return;
+  await UI.run(btn, async () => {
+    await UI.post("/api/gym/trainers/remove", {gym_id: {{ gym.id }}, membership_id: mid});
+    UI.toast("解除しました");
+    setTimeout(()=>location.reload(), 700);
+  });
+}
+async function changeTrainer(btn, mid){
+  const sel = document.getElementById("tr" + mid);
+  await UI.run(btn, async () => {
+    await UI.post("/api/gym/members/trainer",
+                  {gym_id: {{ gym.id }}, membership_id: mid, trainer_id: sel.value});
+    UI.toast("担当トレーナーを変更しました");
+    setTimeout(()=>location.reload(), 700);
+  });
+}
+async function removeMember(btn, mid){
+  if(!confirm("この会員をジムから解除しますか？（記録は残ります）")) return;
+  await UI.run(btn, async () => {
+    await UI.post("/api/gym/members/remove", {gym_id: {{ gym.id }}, membership_id: mid});
+    UI.toast("解除しました");
+    setTimeout(()=>location.reload(), 700);
+  });
+}
+</script>
+</body></html>

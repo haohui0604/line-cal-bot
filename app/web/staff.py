@@ -28,6 +28,20 @@ templates = Jinja2Templates(
     directory=str(Path(__file__).resolve().parent.parent / "templates")
 )
 
+
+def _render(request: Request, name: str, ctx: dict = None):
+    """Starlette の新旧どちらの TemplateResponse シグネチャでも描画する."""
+    import inspect
+    ctx = dict(ctx or {})
+    ctx.setdefault("request", request)
+    try:
+        params = list(inspect.signature(templates.TemplateResponse).parameters)
+    except (TypeError, ValueError):
+        params = []
+    if params[:2] == ["request", "name"]:
+        return templates.TemplateResponse(request, name, ctx)
+    return templates.TemplateResponse(name, ctx)
+
 line_bot_api = (
     LineBotApi(settings.LINE_CHANNEL_ACCESS_TOKEN)
     if settings.LINE_CHANNEL_ACCESS_TOKEN else None
@@ -77,7 +91,7 @@ def trainer_home(request: Request):
             "last_record_date": latest[0]["date"] if latest else None,
         })
     pending = gym_db.list_pending_for_staff(staff_id)
-    return templates.TemplateResponse("staff_members.html", {
+    return _render(request, "staff_members.html", {
         "request": request, "members": rows, "pending_count": len(pending),
     })
 
@@ -88,7 +102,7 @@ def trainer_home(request: Request):
 def requests_page(request: Request):
     staff_id = _require_staff(request)
     reqs = gym_db.list_pending_for_staff(staff_id)
-    return templates.TemplateResponse("staff_requests.html", {
+    return _render(request, "staff_requests.html", {
         "request": request, "requests": reqs,
     })
 
@@ -125,7 +139,7 @@ def member_detail(request: Request, member_id: str, cm_offset: int = 0):
     _require_member_access(staff_id, member_id)
     u = gym_db.get_user(member_id) or {}
     today = today_jst_date().isoformat()
-    return templates.TemplateResponse("staff_member_detail.html", {
+    return _render(request, "staff_member_detail.html", {
         "request": request,
         "member_id": member_id,
         "member_name": u.get("display_name") or member_id,
@@ -183,4 +197,102 @@ def member_summary_api(request: Request, member_id: str, days: int = 14):
         "weight_labels": [(w.get("date") or "")[5:] for w in wseries],
         "weight": [w.get("weight_kg") for w in wseries],
         **pfc_percent_series(pfc),
+    }
+
+
+# ================= ジム管理者画面 (Phase 5) =================
+
+def _admin_gyms(uid: str):
+    return gym_db.list_admin_gyms(uid)
+
+
+def _require_gym_admin(request: Request, gym_id: int = 0):
+    """ジム管理者であることを要求し (uid, gym_id) を返す."""
+    uid = _require_staff(request)
+    admins = _admin_gyms(uid)
+    if not admins:
+        raise HTTPException(status_code=403, detail="ジム管理者権限がありません")
+    if gym_id:
+        if not any(int(a["gym_id"]) == int(gym_id) for a in admins):
+            raise HTTPException(status_code=403, detail="このジムの管理者ではありません")
+        return uid, int(gym_id)
+    return uid, int(admins[0]["gym_id"])
+
+
+@router.get("/gym", response_class=HTMLResponse)
+def gym_home(request: Request, gym_id: int = 0, mine: int = 0):
+    uid, gid = _require_gym_admin(request, gym_id)
+    gym = gym_db.get_gym(gid) or {}
+    return _render(request, "gym_admin.html", {
+        "request": request,
+        "me": uid,
+        "gym": gym,
+        "admin_gyms": _admin_gyms(uid),
+        "staff": gym_db.list_gym_staff_with_status(gid),
+        "trainers": [t for t in gym_db.list_gym_staff_with_status(gid)
+                     if t["status"] == "active"],
+        "members": gym_db.list_members_for_gym_filtered(gid, uid if mine else None),
+        "member_count": len(gym_db.list_members_for_gym_filtered(gid)),
+        "mine": mine,
+        "pending": gym_db.list_pending_requests(gid),
+        "my_comments": gym_db.list_my_member_comments(uid, limit=30),
+        "my_comment_total": gym_db.count_my_member_comments(uid),
+    })
+
+
+@router.post("/api/gym/trainers/invite")
+def api_gym_trainer_invite(request: Request, body: dict):
+    uid, gid = _require_gym_admin(request, int((body or {}).get("gym_id") or 0))
+    code = gym_db.create_trainer_invite(gid, uid, days=7)
+    return {"code": code, "role": "trainer", "gym_id": gid}
+
+
+@router.post("/api/gym/trainers/remove")
+def api_gym_trainer_remove(request: Request, body: dict):
+    uid, gid = _require_gym_admin(request, int((body or {}).get("gym_id") or 0))
+    mid = int((body or {}).get("membership_id") or 0)
+    if not mid:
+        raise HTTPException(status_code=400, detail="membership_id が必要です")
+    res = gym_db.remove_staff(mid, by_user_id=uid)
+    if not res.get("ok"):
+        if res.get("reason") == "has_members":
+            raise HTTPException(
+                status_code=409,
+                detail=f"担当会員が{res.get('count', 0)}名います。先に別のトレーナーへ移管してください")
+        raise HTTPException(status_code=400, detail="このスタッフは解除できません")
+    return {"ok": True}
+
+
+@router.post("/api/gym/members/trainer")
+def api_gym_member_trainer(request: Request, body: dict):
+    uid, gid = _require_gym_admin(request, int((body or {}).get("gym_id") or 0))
+    mid = int((body or {}).get("membership_id") or 0)
+    if not mid:
+        raise HTTPException(status_code=400, detail="membership_id が必要です")
+    ok = gym_db.set_member_trainer(mid, (body or {}).get("trainer_id"))
+    if not ok:
+        raise HTTPException(status_code=404, detail="対象の会員が見つかりません")
+    return {"ok": True}
+
+
+@router.post("/api/gym/members/remove")
+def api_gym_member_remove(request: Request, body: dict):
+    uid, gid = _require_gym_admin(request, int((body or {}).get("gym_id") or 0))
+    mid = int((body or {}).get("membership_id") or 0)
+    if not mid:
+        raise HTTPException(status_code=400, detail="membership_id が必要です")
+    res = gym_db.remove_member(mid, by_user_id=uid)
+    if not res.get("ok", True):
+        raise HTTPException(status_code=400, detail="解除できませんでした")
+    return {"ok": True}
+
+
+@router.get("/api/gym/my-comments")
+def api_gym_my_comments(request: Request, limit: int = 30, offset: int = 0):
+    # 自分が担当する会員のコメントのみ返すため、スタッフ（トレーナー/ジム管理者）で可
+    uid = _require_staff(request)
+    return {
+        "comments": gym_db.list_my_member_comments(uid, limit=max(1, min(limit, 100)),
+                                                   offset=max(0, offset)),
+        "total": gym_db.count_my_member_comments(uid),
     }

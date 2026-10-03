@@ -474,3 +474,135 @@ def remove_member(membership_id: int, *, by_user_id: str) -> Dict[str, Any]:
             " updated_at=CURRENT_TIMESTAMP WHERE id=?", (membership_id,))
     return {"result": "ok", "member_id": row["user_id"],
             "gym_id": row["gym_id"], "gym_name": row["gym_name"]}
+
+
+# ---- ジム管理者画面 (Phase 5) ----
+
+def get_gym(gym_id: int):
+    with get_conn() as c:
+        return _d(c.execute(
+            "SELECT id, name, join_code, plan, owner_user_id, created_at,"
+            "       deleted_at FROM gyms WHERE id=?", (gym_id,)).fetchone())
+
+
+def list_admin_gyms(user_id: str):
+    """そのユーザーが管理者を務める有効なジム一覧."""
+    with get_conn() as c:
+        rows = c.execute("""
+            SELECT m.gym_id, g.name AS gym_name, g.join_code
+              FROM memberships m JOIN gyms g ON g.id = m.gym_id
+             WHERE m.user_id=? AND m.role='gym_admin' AND m.status='active'
+               AND g.deleted_at IS NULL
+             ORDER BY m.id
+        """, (user_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_gym_staff_with_status(gym_id: int):
+    """ジムのトレーナー／ジム管理者を状態つきで一覧（active優先）."""
+    with get_conn() as c:
+        rows = c.execute("""
+            SELECT m.id AS membership_id, m.user_id, m.role, m.status,
+                   u.display_name, u.picture_url,
+                   (SELECT COUNT(*) FROM memberships mm
+                     WHERE mm.gym_id=m.gym_id AND mm.role='member'
+                       AND mm.status='active' AND mm.trainer_id=m.user_id) AS member_count
+              FROM memberships m
+              LEFT JOIN users u ON u.line_user_id = m.user_id
+             WHERE m.gym_id=? AND m.role IN ('trainer','gym_admin')
+             ORDER BY CASE m.status WHEN 'active' THEN 0 ELSE 1 END, m.id
+        """, (gym_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_assigned_members(gym_id: int, trainer_id: str) -> int:
+    with get_conn() as c:
+        r = c.execute(
+            "SELECT COUNT(*) AS n FROM memberships"
+            " WHERE gym_id=? AND role='member' AND status='active'"
+            "   AND trainer_id=?", (gym_id, trainer_id)).fetchone()
+    return int(r["n"]) if r else 0
+
+
+def remove_staff(membership_id: int, *, by_user_id: str) -> dict:
+    """トレーナー／ジム管理者を解除。担当会員が残っていれば拒否する."""
+    with get_conn() as c:
+        row = c.execute(
+            "SELECT id, gym_id, user_id, role, status FROM memberships WHERE id=?",
+            (membership_id,)).fetchone()
+        if not row:
+            return {"ok": False, "reason": "not_found"}
+        m = dict(row)
+        if m["role"] not in ("trainer", "gym_admin"):
+            return {"ok": False, "reason": "not_staff"}
+        n = count_assigned_members(m["gym_id"], m["user_id"])
+        if n > 0:
+            return {"ok": False, "reason": "has_members", "count": n}
+        c.execute("""
+            UPDATE memberships
+               SET status='left', removed_by=?, removed_at=CURRENT_TIMESTAMP,
+                   removed_reason='staff_removed'
+             WHERE id=?
+        """, (by_user_id, membership_id))
+        return {"ok": True}
+
+
+def set_member_trainer(membership_id: int, trainer_id) -> bool:
+    """会員の担当トレーナーを変更（空欄にする場合は None）."""
+    with get_conn() as c:
+        cur = c.execute(
+            "UPDATE memberships SET trainer_id=?, updated_at=CURRENT_TIMESTAMP"
+            " WHERE id=? AND role='member' AND status='active'",
+            (trainer_id or None, membership_id))
+        return (cur.rowcount or 0) > 0
+
+
+def list_members_for_gym_filtered(gym_id: int, trainer_id=None):
+    """ジムの active 会員一覧（trainer_id 指定で「自分の担当のみ」）."""
+    sql = """
+        SELECT m.id AS membership_id, m.user_id, m.trainer_id,
+               u.display_name, u.picture_url, t.display_name AS trainer_name
+          FROM memberships m
+          LEFT JOIN users u ON u.line_user_id = m.user_id
+          LEFT JOIN users t ON t.line_user_id = m.trainer_id
+         WHERE m.gym_id=? AND m.role='member' AND m.status='active'
+    """
+    args = [gym_id]
+    if trainer_id:
+        sql += " AND m.trainer_id=?"
+        args.append(trainer_id)
+    sql += " ORDER BY u.display_name, m.id"
+    with get_conn() as c:
+        rows = c.execute(sql, args).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_my_member_comments(trainer_id: str, limit: int = 30, offset: int = 0):
+    """自分が担当する会員からのコメント（新しい順）."""
+    with get_conn() as c:
+        rows = c.execute("""
+            SELECT cm.id, cm.user_id, cm.body, cm.target_date, cm.created_at,
+                   cm.author_type, u.display_name AS member_name
+              FROM comments cm
+              JOIN memberships m
+                ON m.user_id = cm.user_id AND m.role='member'
+               AND m.status='active' AND m.trainer_id=?
+              LEFT JOIN users u ON u.line_user_id = cm.user_id
+             WHERE cm.author_type='member'
+             ORDER BY cm.created_at DESC, cm.id DESC
+             LIMIT ? OFFSET ?
+        """, (trainer_id, int(limit), int(offset))).fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_my_member_comments(trainer_id: str) -> int:
+    with get_conn() as c:
+        r = c.execute("""
+            SELECT COUNT(*) AS n
+              FROM comments cm
+              JOIN memberships m
+                ON m.user_id = cm.user_id AND m.role='member'
+               AND m.status='active' AND m.trainer_id=?
+             WHERE cm.author_type='member'
+        """, (trainer_id,)).fetchone()
+    return int(r["n"]) if r else 0
