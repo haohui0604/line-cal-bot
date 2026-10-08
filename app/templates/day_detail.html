@@ -112,7 +112,7 @@ function loadLiffSdk(){return new Promise((res,rej)=>{const s=document.createEle
         <span id="balBurnVal" style="text-align:right;font-size:13px">0 kcal</span>
       </div>
       <div class="pfc-line" style="margin-top:6px">収支（摂取－消費）：<b id="balBalance">—</b><br>
-        目標との差（目標－摂取）：<b id="balDiff">—</b></div>
+        目標との差（摂取－目標）：<b id="balDiff">—</b></div>
     </div>
 
     <div class="card">
@@ -264,12 +264,12 @@ function render(d){
     const _bb = document.getElementById("balBalance");
     _bb.textContent = signKcal(_bal);
     _bb.style.color = _bal >= 0 ? "#10b981" : "#ef4444";
-    // 目標との差 = 目標 − 摂取
+    // 目標との差 = 摂取 − 目標（食べ過ぎたら「＋」＝赤）
     const _bd = document.getElementById("balDiff");
     if (d.target_kcal) {
-      const _df = d.target_kcal - (d.intake_kcal||0);
+      const _df = (d.intake_kcal||0) - d.target_kcal;
       _bd.textContent = signKcal(_df);
-      _bd.style.color = _df >= 0 ? "#10b981" : "#ef4444";
+      _bd.style.color = _df > 0 ? "#ef4444" : "#10b981";
     } else { _bd.textContent = "—"; }
   }
   setT("dP", fmt(d.protein_g));

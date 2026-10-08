@@ -66,7 +66,7 @@ function loadLiffSdk(){
       <div class="stat"><span id="tIntake">0</span> kcal 摂取
         <span class="muted">/</span> <span id="tBurn">0</span> kcal 消費</div>
       <div class="muted" style="margin-top:6px">収支（摂取－消費）：<b id="tBalance">—</b></div>
-      <div class="muted">目標との差（目標－摂取）：<b id="tDiff">—</b></div>
+      <div class="muted">目標との差（摂取－目標）：<b id="tDiff">—</b></div>
       <div class="muted">P <span id="tP">0</span>g ・ F <span id="tF">0</span>g
         ・ C <span id="tC">0</span>g</div>
     </div>
@@ -248,8 +248,8 @@ async function main(){
       _bal.style.color = (_in - _bu) >= 0 ? "#10b981" : "#ef4444"; }
     const _dif = document.getElementById("tDiff");
     if(_dif){
-      if(_tg){ _dif.textContent = _signed(_tg - _in);
-        _dif.style.color = (_tg - _in) >= 0 ? "#10b981" : "#ef4444"; }
+      if(_tg){ _dif.textContent = _signed(_in - _tg);
+        _dif.style.color = (_in - _tg) > 0 ? "#ef4444" : "#10b981"; }
       else { _dif.textContent = "未設定"; }
     } }
   document.getElementById("tP").textContent = fmt(s.today.protein_g);

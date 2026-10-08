@@ -1,7 +1,7 @@
 """Phase 9: 会員/トレーナー画面の共通化とジムBI.
 
 - 体重推移の「現在値・増減・期間切替・目標体重線」を会員画面とトレーナー画面で共通化
-- 日別の収支＝摂取−消費 / 目標との差＝目標−摂取、目標線は摂取バーの上
+- 日別の収支＝摂取−消費 / 目標との差＝摂取−目標、目標線は摂取バーの上
 - 会員一覧に目的（設定している場合のみ）
 - ジムBI: 目的の百分率・トレーナーごとの減量実績
 """
@@ -221,16 +221,19 @@ def test_gym_bi_page_and_access():
 
 def test_day_detail_balance_semantics_in_template():
     src = (ROOT / "app/templates/day_detail.html").read_text(encoding="utf-8")
-    # 収支＝摂取−消費、目標との差＝目標−摂取
+    # 収支＝摂取−消費、目標との差＝摂取−目標
     assert "(d.intake_kcal||0) - (d.burn_kcal||0)" in src
-    assert "d.target_kcal - (d.intake_kcal||0)" in src
+    assert "(d.intake_kcal||0) - d.target_kcal" in src
     # 目標線は摂取バーの行の中（摂取バー → 目標線 の順）
     i_bar = src.index('id="balIntakeBar"')
     i_gl = src.index('id="balGoalLine"')
     i_burn = src.index('id="balBurnBar"')
     assert i_bar < i_gl < i_burn
-    # 符号付き表記（下回る場合は「−」）
+    # 符号付き表記（食べ過ぎは「＋」）
     assert "signedKcal" in src or "signKcal" in src
+    # 食べ過ぎ（プラス）＝赤 / 余裕（マイナス）＝緑
+    assert '_df > 0 ? "#ef4444" : "#10b981"' in src
+    assert "目標との差（摂取－目標）" in src
     # 消費バー側には目標線を置かない（goal 行は1つだけ）
     assert src.count('id="balGoalLine"') == 1
 
@@ -243,3 +246,19 @@ def test_shared_charts_module_used_in_both_views():
     # 目標線は摂取側（カロリーグラフ）にだけ引く
     assert "目標摂取" in js
     assert "weightText" in js and "signedKcal" in js
+
+
+def test_goal_diff_sign_convention_on_all_screens():
+    """目標との差は「摂取−目標」で統一。食べ過ぎ＝プラス、色は赤。"""
+    dd = (ROOT / "app/templates/day_detail.html").read_text(encoding="utf-8")
+    mh = (ROOT / "app/templates/member_home.html").read_text(encoding="utf-8")
+    st = (ROOT / "app/templates/staff_member_detail.html").read_text(encoding="utf-8")
+    for src in (dd, mh, st):
+        assert "目標との差（摂取－目標）" in src
+        assert "目標との差（目標－摂取）" not in src
+    assert "(d.intake_kcal||0) - d.target_kcal" in dd
+    assert "_signed(_in - _tg)" in mh
+    assert "((_in - _tg)|round(0)|int)" in st
+    assert '_df > 0 ? "#ef4444" : "#10b981"' in dd
+    assert '(_in - _tg) > 0 ? "#ef4444" : "#10b981"' in mh
+    assert "'#ef4444' if _d > 0 else '#10b981'" in st
