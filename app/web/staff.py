@@ -18,7 +18,7 @@ from app.config import settings
 from app.services.db import (
     fetch_day_summary, fetch_recent_entries, fetch_weight_series,
 )
-from app.services import bi, goals, gym_db, periods
+from app.services import bi, goals, gym_db, insights, periods
 from app.services.dates import today_jst_date
 from app.services.day_view import pfc_percent_series
 
@@ -94,9 +94,13 @@ def trainer_home(request: Request):
             "goal": badges.get(m["user_id"]),   # 設定している場合のみ入る
         })
     pending = gym_db.list_pending_for_staff(staff_id)
+    ov = bi.trainer_overview(staff_id, days=30)
     return _render(request, "staff_members.html", {
         "request": request, "members": rows, "pending_count": len(pending),
         "unread": gym_db.count_unread_member_comments(staff_id),
+        "bi": ov,
+        "ai": insights.trainer_suggest(staff_id, _suggest_items(ov),
+                                       allow_generate=False),
     })
 
 
@@ -262,7 +266,93 @@ def gym_bi(request: Request, gym_id: int = 0, days: int = 90):
         "days": int(days),
         "dist": bi.goal_distribution(gid),
         "rep": bi.trainer_loss_report(gid, days=int(days)),
+        "cont": bi.continuity_report(gid, days=int(days)),
+        "churn": bi.churn_risk(gid, days=int(days)),
+        "achv": bi.goal_achievement(gid, days=max(int(days), 90)),
+        "rank": bi.trainer_ranking(gid, days=int(days)),
+        "corr": bi.comment_correlation(gid, days=30),
+        "trend": bi.weekly_trend(gid, weeks=8),
+        "quality": bi.data_quality(gid, days=int(days)),
+        "ai": insights.gym_report(gid, {}, period="week", allow_generate=False),
     })
+
+
+def _suggest_items(ov: dict) -> list:
+    """AIの「次の一手」に渡す上位3名（集計値のみ）."""
+    rows = list((ov or {}).get("rows") or [])
+    rows.sort(key=lambda r: (-(r.get("idle_days") if r.get("idle_days") is not None
+                               else 9999), -(r.get("days7") or 0)))
+    out = []
+    for r in rows[:3]:
+        out.append({
+            "user_id": r.get("user_id"),
+            "name": r.get("member_name"),
+            "最終記録": r.get("last_date") or "記録なし",
+            "経過日数": r.get("idle_days"),
+            "直近7日の記録日数": r.get("days7"),
+            "今日の摂取kcal": r.get("today_intake"),
+            "目標kcal": r.get("target_kcal"),
+            "目標との差": r.get("diff"),
+            "目的": r.get("goal_label") or "未設定",
+        })
+    return out
+
+
+def _gym_ai_facts(gid: int, days: int = 30) -> dict:
+    """AIジムレポートに渡す集計値だけの辞書（個人情報は含めない）."""
+    cont = bi.continuity_report(gid, days=days)
+    dist = bi.goal_distribution(gid)
+    achv = bi.goal_achievement(gid, days=max(int(days), 90))
+    rank = bi.trainer_ranking(gid, days=max(int(days), 90))
+    churn = bi.churn_risk(gid, days=days)
+    quality = bi.data_quality(gid, days=days)
+    dist_txt = " / ".join(
+        f"{bi.MODE_JP.get(k, k)} {v}名" for k, v in (dist.get("counts") or {}).items())
+    achv_txt = " / ".join(
+        f"{v['label']} 対象{v['members']}名・達成{v['achieved']}名"
+        for v in (achv.get("summary") or {}).values() if v.get("members"))
+    top = rank[0] if rank else {}
+    return {
+        "対象期間": f"直近{days}日",
+        "会員数": cont["members"],
+        "7日記録あり": cont["light"],
+        "ライト継続率": (f"{cont['light_pct']}%" if cont["light_pct"] is not None else "—"),
+        "定着人数": cont["settled"],
+        "定着率": (f"{cont['settled_pct']}%" if cont["settled_pct"] is not None else "—"),
+        "週次定着人数": cont["weekly"],
+        "期間内の食事記録数": cont["entry_count"],
+        "目的別人数": dist_txt or "未設定",
+        "目標達成状況": achv_txt or "対象なし",
+        "離脱予兆(赤)": len([c for c in churn if c["level"] == "red"]),
+        "離脱予兆(黄)": len([c for c in churn if c["level"] == "yellow"]),
+        "未返信コメント数": sum(int(r.get("unread") or 0) for r in rank),
+        "コメント数トップ": (f"{top.get('trainer_name')}（30日 {top.get('comments_30d')}件）"
+                            if top else "—"),
+        "記録の内訳": quality.get("source_text") or "—",
+        "実測体重の割合": (f"{quality['measured_pct']}%" if quality.get("measured_pct") is not None else "—"),
+    }
+
+
+@router.post("/api/gym/ai-report")
+def api_gym_ai_report(request: Request, body: dict):
+    """AIジムレポートを生成（ジム管理者のみ）."""
+    uid, gid = _require_gym_admin(request, int((body or {}).get("gym_id") or 0))
+    b = body or {}
+    period = "month" if str(b.get("period")) == "month" else "week"
+    try:
+        days = int(b.get("days") or 30)
+    except (TypeError, ValueError):
+        days = 30
+    facts = _gym_ai_facts(gid, days=days)
+    return insights.gym_report(gid, facts, period=period, allow_generate=True)
+
+
+@router.post("/api/trainer/ai-suggest")
+def api_trainer_ai_suggest(request: Request):
+    """担当会員への「次の一手」を生成（トレーナー/ジム管理者）."""
+    uid = _require_staff(request)
+    ov = bi.trainer_overview(uid, days=30)
+    return insights.trainer_suggest(uid, _suggest_items(ov), allow_generate=True)
 
 
 @router.post("/api/gym/trainers/invite")

@@ -2,6 +2,115 @@
 {% block title %}担当会員{% endblock %}
 {% block content %}
 <h2>担当会員</h2>
+
+<style>
+ .bi-kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+ @media (max-width:720px){.bi-kpis{grid-template-columns:repeat(2,1fr)}}
+ .bi-kpi{background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px}
+ .bi-kpi .v{font-size:20px;font-weight:700}
+ .bi-tag{display:inline-block;border-radius:999px;padding:1px 8px;font-size:11px;font-weight:700}
+ .bi-red{background:#fee2e2;color:#b91c1c}
+ .bi-yellow{background:#fef3c7;color:#92400e}
+ .bi-pre{white-space:pre-wrap;font-family:inherit;font-size:13px;margin:0;
+         background:#f8fafc;border:1px solid var(--line);border-radius:8px;padding:12px}
+</style>
+
+<div class="card">
+  <h2>担当BI（直近{{ bi.days }}日）</h2>
+  {% if bi.total %}
+  <div class="bi-kpis">
+    <div class="bi-kpi"><div class="muted">ライト継続（7日に1日以上）</div>
+      <div class="v">{% if bi.light_pct is not none %}{{ bi.light_pct }}%{% else %}—{% endif %}</div>
+      <div class="muted">{{ bi.light }}名 / {{ bi.total }}名</div></div>
+    <div class="bi-kpi"><div class="muted">定着（7日に3日以上）</div>
+      <div class="v">{% if bi.settled_pct is not none %}{{ bi.settled_pct }}%{% else %}—{% endif %}</div>
+      <div class="muted">{{ bi.settled }}名 / {{ bi.total }}名</div></div>
+    <div class="bi-kpi"><div class="muted">離脱予兆</div>
+      <div class="v" style="color:#ef4444">{{ bi.churn | length }}名</div>
+      <div class="muted">7日以上 or 記録なし</div></div>
+    <div class="bi-kpi"><div class="muted">未返信のコメント</div>
+      <div class="v">{{ bi.unread }}</div>
+      <div class="muted">質問タブで返信</div></div>
+  </div>
+
+  <h2 style="margin-top:16px">今日の摂取と目標（摂取－目標）</h2>
+  <p class="muted">プラス＝食べ過ぎ（赤）、マイナス＝余裕（緑）。目標未設定の会員は「—」です。
+    合計 {{ bi.diff.over }}名がオーバー / {{ bi.diff.under }}名が範囲内
+    {% if bi.diff.avg is not none %}（平均 {{ "%+d"|format(bi.diff.avg) }} kcal）{% endif %}
+    {% if bi.diff.unknown %}・目標未設定 {{ bi.diff.unknown }}名{% endif %}</p>
+
+  {% if bi.progress %}
+  <h2 style="margin-top:16px">減量が進んでいる会員（体重の増減）</h2>
+  <table>
+    <tr><th>会員</th><th>現在</th><th>増減</th><th>目標進捗</th><th>計測</th></tr>
+    {% for p in bi.progress %}
+    <tr>
+      <td>{{ p.member_name }}</td>
+      <td>{{ p.latest }} kg</td>
+      <td>{% if p.delta < 0 %}<span style="color:#10b981;font-weight:700">−{{ p.delta | abs }} kg</span>
+          {% elif p.delta > 0 %}<span style="color:#ef4444;font-weight:700">+{{ p.delta }} kg</span>
+          {% else %}±0 kg{% endif %}</td>
+      <td>{% if p.pct_to_goal is none %}—{% else %}{{ p.pct_to_goal }}%{% endif %}</td>
+      <td class="muted">{{ p.points }}点</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  {% if bi.churn %}
+  <h2 style="margin-top:16px">離脱予兆トップ5</h2>
+  <table>
+    <tr><th>会員</th><th>最終記録</th><th>経過</th><th>直近7日</th><th>判定</th></tr>
+    {% for c in bi.churn %}
+    <tr>
+      <td><a href="/trainer/members/{{ c.user_id }}">{{ c.member_name }}</a></td>
+      <td class="muted">{{ c.last_date or "記録なし" }}</td>
+      <td>{% if c.idle_days is none %}—{% else %}{{ c.idle_days }}日{% endif %}</td>
+      <td class="muted">{{ c.days7 }}日</td>
+      <td><span class="bi-tag {{ 'bi-red' if c.level == 'red' else 'bi-yellow' }}">{{ c.level_label }}</span></td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  {% if bi.no_record_today or bi.missing_slots %}
+  <h2 style="margin-top:16px">今日の記録漏れ</h2>
+  {% if bi.no_record_today %}
+  <p class="muted">まだ1件も記録がない会員（{{ bi.no_record_today | length }}名）:
+    {{ bi.no_record_today | join("、") }}</p>
+  {% endif %}
+  {% if bi.missing_slots %}
+  <table>
+    <tr><th>会員</th><th>抜けている区分</th></tr>
+    {% for m in bi.missing_slots %}
+    <tr><td>{{ m.member_name }}</td><td class="muted">{{ m.missing | join("・") }}</td></tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+  {% endif %}
+  {% else %}
+  <p class="muted">担当会員がいないため、BIはまだ表示できません。</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>🤖 次の一手（AI）</h2>
+  {% if ai.available %}
+    <pre class="bi-pre" id="aiSuggest">{{ ai.text }}</pre>
+    <div style="margin-top:10px">
+      <button class="btn" id="aiSuggestBtn" type="button">再生成</button>
+      <span class="muted" id="aiSuggestMsg">source: {{ ai.source }}</span>
+    </div>
+  {% else %}
+    <p class="muted">担当会員のうち、優先して声をかけるべき上位3名について
+      「根拠 → 提案 → 送る文面」をAIが下書きします（1日1回まで）。</p>
+    <button class="btn" id="aiSuggestBtn" type="button">次の一手を生成</button>
+    <span class="muted" id="aiSuggestMsg"></span>
+  {% endif %}
+  <p class="muted" style="margin-top:8px">AIに渡すのは集計値だけです（会員の食事内容は渡しません）。</p>
+</div>
+
+
 {% if not members %}
 <div class="card muted">
   トレーナーとしてログイン中です。まだ担当会員がいません。<br><br>
@@ -31,4 +140,34 @@
 <p class="muted">クリックするとその会員の「推移画面」（今日の収支・14日グラフ・コメント）を開き、
   そこから日別画面へ進めます。</p>
 {% endif %}
+<script>
+(function () {
+  var b = document.getElementById("aiSuggestBtn");
+  if (!b) return;
+  b.addEventListener("click", function () {
+    var msg = document.getElementById("aiSuggestMsg");
+    b.disabled = true;
+    if (msg) msg.textContent = "生成中…（10秒ほどかかります）";
+    fetch("/api/trainer/ai-suggest", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}"
+    }).then(function (r) { return r.json(); }).then(function (j) {
+      var box = document.getElementById("aiSuggest");
+      if (j && j.text) {
+        if (box) { box.textContent = j.text; }
+        else { location.reload(); return; }
+        if (msg) msg.textContent = "source: " + (j.source || "");
+      } else if (msg) {
+        msg.textContent = (j && j.detail) ? j.detail : "生成できませんでした";
+      }
+      b.disabled = false;
+    }).catch(function () {
+      if (msg) msg.textContent = "生成できませんでした";
+      b.disabled = false;
+    });
+  });
+})();
+</script>
+
 {% endblock %}

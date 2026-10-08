@@ -60,6 +60,67 @@
 </div>
 
 <div class="card">
+  <h2>継続率（記録日ベース）</h2>
+  <div class="kpis">
+    <div class="kpi"><div class="mut">ライト継続（直近7日に1日以上）</div>
+      <div class="v">{% if cont.light_pct is not none %}{{ cont.light_pct }}%{% else %}—{% endif %}</div>
+      <div class="mut">{{ cont.light }}名 / {{ cont.members }}名</div></div>
+    <div class="kpi"><div class="mut">定着（直近7日に3日以上）</div>
+      <div class="v">{% if cont.settled_pct is not none %}{{ cont.settled_pct }}%{% else %}—{% endif %}</div>
+      <div class="mut">{{ cont.settled }}名 / {{ cont.members }}名</div></div>
+    <div class="kpi"><div class="mut">週次定着（4週すべてで1日以上）</div>
+      <div class="v">{% if cont.weekly_pct is not none %}{{ cont.weekly_pct }}%{% else %}—{% endif %}</div>
+      <div class="mut">{{ cont.weekly }}名 / {{ cont.members }}名</div></div>
+    <div class="kpi"><div class="mut">期間内の食事記録</div>
+      <div class="v">{{ cont.entry_count }}</div>
+      <div class="mut">直近{{ cont.days }}日</div></div>
+  </div>
+  <p class="mut" style="margin:10px 0 0">継続率は「食事・体重・活動のいずれかを記録した日」で数えています。
+    ログイン履歴は持っていないため、閲覧ではなく記録を継続の指標にしています。</p>
+</div>
+
+<div class="card">
+  <h2>離脱予兆（最終記録からの経過日数）</h2>
+  {% if churn %}
+  <table>
+    <tr><th>会員</th><th>担当トレーナー</th><th>最終記録</th><th>経過</th><th>直近7日の記録</th><th>判定</th></tr>
+    {% for c in churn %}
+    <tr>
+      <td>{{ c.member_name }}</td>
+      <td>{{ c.trainer_name }}</td>
+      <td class="mut">{{ c.last_date or "記録なし" }}</td>
+      <td>{% if c.idle_days is none %}—{% else %}{{ c.idle_days }}日{% endif %}</td>
+      <td class="mut">{{ c.days7 }}日</td>
+      <td>{% if c.level == 'red' %}<span class="neg">赤</span>{% else %}<span style="color:#b45309;font-weight:700">黄</span>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  <p class="mut">3日以上で「黄」、7日以上または記録なしで「赤」です。</p>
+  {% else %}
+  <p class="mut">離脱予兆のある会員はいません。</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>🤖 AIジムレポート（{{ ai.period_key }}）</h2>
+  {% if ai.available %}
+    <pre id="aiText" style="white-space:pre-wrap;font-family:inherit;font-size:13px;margin:0">{{ ai.text }}</pre>
+    <div class="row" style="margin-top:10px">
+      <button class="btn" id="aiRegen" style="background:#06c755;color:#fff;border:none;border-radius:8px;padding:8px 16px;cursor:pointer">再生成</button>
+      <span class="mut" id="aiMsg">source: {{ ai.source }}</span>
+    </div>
+  {% else %}
+    <p class="mut">この週のレポートはまだ生成していません。ボタンを押すと、集計値だけを使ってAIが運営レポートを書きます
+      （同じ週のうちは再生成されません）。</p>
+    <div class="row">
+      <button class="btn" id="aiRegen" style="background:#06c755;color:#fff;border:none;border-radius:8px;padding:8px 16px;cursor:pointer">AIレポートを生成</button>
+      <span class="mut" id="aiMsg"></span>
+    </div>
+  {% endif %}
+  <p class="mut" style="margin-top:8px">AIには集計値だけを渡します（会員の氏名・食事内容は渡しません）。</p>
+</div>
+
+<div class="card">
   <h2>目的設定の内訳（設定している会員のみ・百分率）</h2>
   {% if dist.total %}
   <div class="row" style="align-items:flex-start;gap:24px">
@@ -80,6 +141,26 @@
   <p class="mut">目的（減量 / 減塩 / 筋肉）を設定している会員がまだいません。
     会員がLINEボットで目的を設定すると、ここに内訳が出ます。</p>
   {% endif %}
+</div>
+
+<div class="card">
+  <h2>目標達成率（目的別）</h2>
+  <table>
+    <tr><th>目的</th><th>対象会員</th><th>達成</th><th>達成率</th><th>平均達成率</th></tr>
+    {% for key in ["weight", "salt", "muscle"] %}
+    {% set a = achv.summary.get(key) or {} %}
+    <tr>
+      <td>{{ a.get("label") or key }}</td>
+      <td>{{ a.get("members", 0) }}名</td>
+      <td>{{ a.get("achieved", 0) }}名</td>
+      <td>{% if a.get("pct") is none %}—{% else %}<b>{{ a.get("pct") }}%</b>{% endif %}</td>
+      <td>{% if a.get("avg_rate") is none %}—{% else %}{{ a.get("avg_rate") }}%{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  <p class="mut">減量＝最新の実測体重が目標体重以下。減塩＝1日の塩分が目標以下だった日の割合、
+    筋肉＝1日のたんぱく質が目標以上だった日の割合（70%以上を「達成」と数えます）。
+    平均達成率は、その目的の会員の達成率の平均です。</p>
 </div>
 
 <div class="card">
@@ -114,6 +195,91 @@
 </div>
 
 <div class="card">
+  <h2>トレーナーランキング</h2>
+  {% if rank %}
+  <table>
+    <tr><th>トレーナー</th><th>担当</th><th>ライト継続率</th><th>定着率</th>
+        <th>平均減量</th><th>コメント(30日)</th><th>未返信</th><th>離脱予兆</th></tr>
+    {% for r in rank %}
+    <tr>
+      <td>{{ r.trainer_name }}</td>
+      <td>{{ r.members }}名</td>
+      <td>{% if r.light_pct is none %}—{% else %}<b>{{ r.light_pct }}%</b>{% endif %}</td>
+      <td>{% if r.settled_pct is none %}—{% else %}{{ r.settled_pct }}%{% endif %}</td>
+      <td>{% if r.avg_loss is none %}—{% else %}{{ r.avg_loss }} kg{% endif %}</td>
+      <td>{{ r.comments_30d }}</td>
+      <td>{% if r.unread %}<span class="neg">{{ r.unread }}</span>{% else %}0{% endif %}</td>
+      <td>{% if r.idle %}{{ r.idle }}名{% else %}0{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  <p class="mut">ライト継続率の高い順です。担当会員が1名でも集計します。</p>
+  {% else %}
+  <p class="mut">担当が割り当てられた会員がいません。</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>コメント数と成果の関係（直近30日のコメント・継続率・達成率）</h2>
+  {% if corr %}
+  <table>
+    <tr><th>トレーナー</th><th>コメント(30日)</th><th>ライト継続率</th><th>定着率</th><th>目標達成率</th></tr>
+    {% for c in corr %}
+    <tr>
+      <td>{{ c.trainer_name }}</td>
+      <td>{{ c.comments_30d }}</td>
+      <td>{% if c.light_pct is none %}—{% else %}{{ c.light_pct }}%{% endif %}</td>
+      <td>{% if c.settled_pct is none %}—{% else %}{{ c.settled_pct }}%{% endif %}</td>
+      <td>{% if c.achieved_pct is none %}—{% else %}{{ c.achieved_pct }}%（対象{{ c.goal_members }}名）{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  <p class="mut">「コメントを多く出すトレーナーの担当会員ほど継続率・達成率が高いか」を見るための表です。
+    母数が少ないうちは参考値として扱ってください。</p>
+  {% else %}
+  <p class="mut">データがまだありません。</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>週次トレンド（直近8週）</h2>
+  {% if trend %}
+  <div class="chartbox"><canvas id="gymBiTrend"></canvas></div>
+  <table style="margin-top:12px">
+    <tr><th>週</th><th>記録した会員</th><th>延べ記録日数</th><th>平均摂取</th><th>平均消費</th></tr>
+    {% for t in trend %}
+    <tr>
+      <td class="mut">{{ t.label }}</td>
+      <td>{{ t.members }}名</td>
+      <td class="mut">{{ t.member_days }}日</td>
+      <td>{% if t.avg_intake is none %}—{% else %}{{ t.avg_intake }} kcal{% endif %}</td>
+      <td>{% if t.avg_burn is none %}—{% else %}{{ t.avg_burn }} kcal{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="mut">まだ記録がありません。</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>記録の質（直近{{ quality.days }}日）</h2>
+  <div class="kpis">
+    <div class="kpi"><div class="mut">食事記録の総数</div><div class="v">{{ quality.total_entries }}</div></div>
+    <div class="kpi"><div class="mut">実測体重の割合</div>
+      <div class="v">{% if quality.measured_pct is none %}—{% else %}{{ quality.measured_pct }}%{% endif %}</div>
+      <div class="mut">{{ quality.measured }} / {{ quality.weight_records }}件</div></div>
+    <div class="kpi"><div class="mut">いちばん多い入力方法</div>
+      <div class="v" style="font-size:15px">{{ quality.sources[0].label if quality.sources else "—" }}</div>
+      <div class="mut">{% if quality.sources %}{{ quality.sources[0].pct }}%{% endif %}</div></div>
+    <div class="kpi"><div class="mut">入力方法の内訳</div>
+      <div class="v" style="font-size:13px">{{ quality.source_text }}</div></div>
+  </div>
+  <p class="mut" style="margin:10px 0 0">「実測体重」は体重計の写真から取り込んだ記録です。
+    この割合が低いと、減量実績の精度が落ちます。</p>
+</div>
+
+<div class="card">
   <h2>会員ごとの体重推移（減量目的・直近{{ days }}日）</h2>
   {% if rep.details %}
   <table>
@@ -142,7 +308,9 @@
 const BI = {
   dist: {{ dist | tojson }},
   rows: {{ rep.rows | tojson }},
-  days: {{ days }}
+  days: {{ days }},
+  trend: {{ trend | tojson }},
+  rank: {{ rank | tojson }}
 };
 (function () {
   const pie = document.getElementById("gymBiPie");
@@ -181,6 +349,59 @@ const BI = {
         plugins: { legend: { labels: { boxWidth: 12, font: { size: 11 } } } },
         scales: { y: { title: { display: true, text: "平均減量 (kg)" } } }
       }
+    });
+  }
+  const tr = document.getElementById("gymBiTrend");
+  if (tr && (BI.trend || []).length) {
+    new Chart(tr, {
+      type: "line",
+      data: {
+        labels: BI.trend.map(function (t) { return t.label; }),
+        datasets: [
+          { label: "記録した会員数", data: BI.trend.map(function (t) { return t.members; }),
+            borderColor: "#06c755", backgroundColor: "#06c75533", tension: .3, yAxisID: "y" },
+          { label: "平均摂取 kcal", data: BI.trend.map(function (t) { return t.avg_intake; }),
+            borderColor: "#3b82f6", backgroundColor: "#3b82f633", tension: .3, yAxisID: "y1" },
+          { label: "平均消費 kcal", data: BI.trend.map(function (t) { return t.avg_burn; }),
+            borderColor: "#f59e0b", backgroundColor: "#f59e0b33", tension: .3, yAxisID: "y1" }
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { labels: { boxWidth: 12, font: { size: 11 } } } },
+        scales: {
+          y: { position: "left", title: { display: true, text: "会員数" } },
+          y1: { position: "right", grid: { drawOnChartArea: false },
+                title: { display: true, text: "kcal" } }
+        }
+      }
+    });
+  }
+
+  const regen = document.getElementById("aiRegen");
+  if (regen) {
+    regen.addEventListener("click", function () {
+      const msg = document.getElementById("aiMsg");
+      regen.disabled = true;
+      if (msg) msg.textContent = "生成中…（10秒ほどかかります）";
+      fetch("/api/gym/ai-report", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ gym_id: {{ gym.id }}, period: "week", days: BI.days })
+      }).then(function (r) { return r.json(); }).then(function (j) {
+        const box = document.getElementById("aiText");
+        if (j && j.text) {
+          if (box) { box.textContent = j.text; }
+          else { location.reload(); return; }
+          if (msg) msg.textContent = "source: " + (j.source || "");
+        } else if (msg) {
+          msg.textContent = (j && j.detail) ? j.detail : "生成できませんでした";
+        }
+        regen.disabled = false;
+      }).catch(function () {
+        if (msg) msg.textContent = "生成できませんでした";
+        regen.disabled = false;
+      });
     });
   }
 })();
