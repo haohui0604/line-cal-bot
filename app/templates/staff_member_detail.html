@@ -35,6 +35,11 @@
   <div class="stat">{{ "%.0f"|format(summary.get("intake_kcal") or 0) }} kcal 摂取
     <span class="muted">/</span>
     {{ "%.0f"|format(summary.get("burn_kcal") or summary.get("burn") or 0) }} kcal 消費</div>
+  {% set _in = (summary.get("intake_kcal") or 0) %}
+  {% set _bu = (summary.get("burn_kcal") or summary.get("burn") or 0) %}
+  {% set _tg = summary.get("target_kcal") %}
+  <div class="muted" style="margin-top:6px">収支（摂取－消費）：<b>{{ ("%+d"|format((_in - _bu)|round(0)|int))|replace("-", "−") }} kcal</b></div>
+  <div class="muted">目標との差（目標－摂取）：<b>{% if _tg %}{{ ("%+d"|format((_tg - _in)|round(0)|int))|replace("-", "−") }} kcal{% else %}未設定{% endif %}</b></div>
   <div class="muted">P {{ "%.0f"|format(summary.get("protein_g") or 0) }}g ・
     F {{ "%.0f"|format(summary.get("fat_g") or 0) }}g ・
     C {{ "%.0f"|format(summary.get("carb_g") or 0) }}g</div>

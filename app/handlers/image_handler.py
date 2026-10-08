@@ -107,25 +107,41 @@ def handle_image(user_id: str, message_id: str, line_bot_api):
             "スクショを送ってください"
         ))
 
-    # ---- 成分表 ----
+    # ---- 成分表 → 料理写真と同じ「いつの食事か」選択フローへ ----
     if mode == "label":
-        save_entry(
-            user_id=user_id,
-            date=today_jst(),
-            meal_slot="snack",
-            food_name=data.get("name") or data.get("brand") or "未名",
-            kcal=float(data.get("kcal") or 0),
-            protein_g=data.get("protein_g"),
-            fat_g=data.get("fat_g"),
-            carb_g=data.get("carb_g"),
-            salt_g=data.get("salt_g"),
-            quantity_g=data.get("quantity_g"),
-            source_type="ocr_label",
-            confidence="confirmed",
-            linked_image_url=None,
-            note=f"brand={data.get('brand')}" if data.get("brand") else None,
-        )
-        return TextSendMessage(text=_make_label_reply(data))
+        from app.handlers.text_handler import _pending
+        foods = [{
+            "name": data.get("name") or data.get("brand") or "未名",
+            "kcal": float(data.get("kcal") or 0),
+            "protein_g": data.get("protein_g"),
+            "fat_g": data.get("fat_g"),
+            "carb_g": data.get("carb_g"),
+            "salt_g": data.get("salt_g"),
+            "quantity_g": data.get("quantity_g"),
+            "_source_type": "ocr_label",
+            "_confidence": "confirmed",
+        }]
+        _pending[user_id] = {"foods": foods, "meal_slot": "snack",
+                             "date": today_jst(), "awaiting_slot": True,
+                             "created_at": time.time(),
+                             "source_type": "ocr_label",
+                             "confidence": "confirmed",
+                             "brand": data.get("brand")}
+        reaction = (data.get("reaction") or "").strip()
+        lines = []
+        if reaction:
+            lines += [reaction, ""]
+        f = foods[0]
+        lines.append("🏷 成分表から読み取りました (記録前の確認):")
+        lines.append(
+            f"・{f['name']} {f['kcal']:.0f}kcal"
+            f" (P{f.get('protein_g','?')} F{f.get('fat_g','?')}"
+            f" C{f.get('carb_g','?')} 食塩{f.get('salt_g','?')}g)")
+        lines += ["", "この内容で記録しますか？ →「はい」/「いいえ」",
+                  "いつの食事か、下のボタンから選んでください。",
+                  "15分間選ばれない場合や、ほかのメッセージが投稿された場合は、",
+                  "今日の間食として登録されます。"]
+        return TextSendMessage(text="\n".join(lines), quick_reply=slot_qr())
 
     # ---- 料理写真 → 推定 → 確認フロー ----
     from app.handlers.text_handler import _pending

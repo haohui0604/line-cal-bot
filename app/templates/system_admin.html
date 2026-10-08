@@ -41,7 +41,11 @@
     <div><span class="mut">食事記録 30日</span><b>{{ analytics.meals_30d if analytics.meals_30d is not none else "—" }}</b></div>
     <div><span class="mut">記録した人 7日</span><b>{{ analytics.active_users_7d if analytics.active_users_7d is not none else "—" }}</b></div>
     <div><span class="mut">コメント 30日</span><b>{{ analytics.comments_30d if analytics.comments_30d is not none else "—" }}</b></div>
+    <div><span class="mut">友だち数（LINE）</span><b>{% if insight and insight.ok %}{{ insight.followers }}{% else %}取得不可{% endif %}</b></div>
+    <div><span class="mut">ブロック数</span><b>{% if insight and insight.ok %}{{ insight.blocks }}{% else %}取得不可{% endif %}</b></div>
+    <div><span class="mut">到達数</span><b>{% if insight and insight.ok %}{{ insight.targetedReaches }}{% else %}取得不可{% endif %}</b></div>
   </div>
+  <p class="mut" style="margin-top:8px">友だち数はLINE公式の集計値（{% if insight %}{{ insight.date }}{% endif %} 時点・前日分）。取得できないときは「取得不可」と表示します。</p>
   {% if analytics.gyms_needing_attention %}
   <p class="mut" style="margin-top:12px">要フォロー（会員0 or トレーナー0）:
     {% for g in analytics.gyms_needing_attention %}{{ g.name }}（会員{{ g.members}}/トレーナー{{ g.trainers }}）{% if not loop.last %}、{% endif %}{% endfor %}

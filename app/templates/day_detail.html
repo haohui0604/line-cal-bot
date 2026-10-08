@@ -111,8 +111,8 @@ function loadLiffSdk(){return new Promise((res,rej)=>{const s=document.createEle
           <div id="balBurnBar" style="height:100%;width:0;background:repeating-linear-gradient(45deg,#f59e0b,#f59e0b 4px,#fff 4px,#fff 8px);border-right:1px solid #f59e0b"></div></div>
         <span id="balBurnVal" style="text-align:right;font-size:13px">0 kcal</span>
       </div>
-      <div class="pfc-line" style="margin-top:6px">収支（摂取−消費）: <b id="balBalance">—</b>
-        ・ 目標との差（目標−消費）: <b id="balDiff">—</b></div>
+      <div class="pfc-line" style="margin-top:6px">収支（摂取－消費）：<b id="balBalance">—</b><br>
+        目標との差（目標－摂取）：<b id="balDiff">—</b></div>
     </div>
 
     <div class="card">
@@ -264,10 +264,10 @@ function render(d){
     const _bb = document.getElementById("balBalance");
     _bb.textContent = signKcal(_bal);
     _bb.style.color = _bal >= 0 ? "#10b981" : "#ef4444";
-    // 目標との差 = 目標 − 消費
+    // 目標との差 = 目標 − 摂取
     const _bd = document.getElementById("balDiff");
     if (d.target_kcal) {
-      const _df = d.target_kcal - (d.burn_kcal||0);
+      const _df = d.target_kcal - (d.intake_kcal||0);
       _bd.textContent = signKcal(_df);
       _bd.style.color = _df >= 0 ? "#10b981" : "#ef4444";
     } else { _bd.textContent = "—"; }

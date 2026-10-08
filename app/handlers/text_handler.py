@@ -274,6 +274,11 @@ def _build_context(user_id: str) -> dict:
 
 def _save_foods(user_id: str, foods: list, meal_slot: str,
                 rec_date: str = None) -> None:
+    """確定した foods を entries に保存する.
+
+    source_type / confidence は各 food の "_source_type" / "_confidence" から
+    読む（成分表=ocr_label/confirmed、写真=llm_estimate/estimated）。
+    """
     d = rec_date or _today()
     for f in foods:
         save_entry(
@@ -284,7 +289,8 @@ def _save_foods(user_id: str, foods: list, meal_slot: str,
             protein_g=f.get("protein_g"), fat_g=f.get("fat_g"),
             carb_g=f.get("carb_g"), salt_g=f.get("salt_g"),
             quantity_g=f.get("quantity_g"),
-            source_type="llm_estimate", confidence="estimated",
+            source_type=f.get("_source_type") or "llm_estimate",
+            confidence=f.get("_confidence") or "estimated",
         )
 
 
@@ -381,8 +387,10 @@ def _confirm_pending_message(p: dict, user_id: str):
     names = "、".join((f.get("name") or "未名") for f in foods)
     total = sum(float(f.get("kcal") or 0) for f in foods)
     d = p.get("date") or _today()
+    _f0 = (p.get("foods") or [{}])[0]
+    icon = "🏷" if _f0.get("_source_type") == "ocr_label" else "📷"
     return TextSendMessage(
-        text=(f"📷 {_date_jp(d)}の{_slot_jp(p.get('meal_slot') or 'snack')}として記録します。\n"
+        text=(f"{icon} {_date_jp(d)}の{_slot_jp(p.get('meal_slot') or 'snack')}として記録します。\n"
               f"{names}\n合計 約{int(round(total))} kcal\n\nこの内容で記録しますか？"),
         quick_reply=qr(pb("✅ 記録する", "cmd=confirm_yes", "記録する"),
                        pb("キャンセル", "cmd=confirm_no", "キャンセル")))
@@ -487,7 +495,9 @@ def finalize_pending(user_id: str, incoming_text: str = None):
     total = int(round(sum(float(f.get("kcal") or 0) for f in foods)))
     d = p.get("date") or _today()
     slot_jp = _slot_jp(p.get("meal_slot") or "snack")
-    head = "⏱ 食事区分が選ばれなかったので" if not chosen else "📷 写真の記録を確定しました"
+    _f0 = (p.get("foods") or [{}])[0]
+    _what = "🏷 成分表の記録" if _f0.get("_source_type") == "ocr_label" else "📷 写真の記録"
+    head = "⏱ 食事区分が選ばれなかったので" if not chosen else f"{_what}を確定しました"
     return (f"{head}、{_date_jp(d)}の{slot_jp}として登録しました。"
             f"（{len(foods)}品・約{total} kcal）")
 

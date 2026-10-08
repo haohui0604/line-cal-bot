@@ -21,6 +21,7 @@ from fastapi.templating import Jinja2Templates
 from app import auth
 from app.config import settings
 from app.services import admin_db
+from app.services import line_insight
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -82,6 +83,7 @@ def system_home(request: Request):
         "env_admins": sorted(settings.admin_user_id_set),
         "audit": admin_db.list_audit(30),
         "analytics": admin_db.analytics(),
+        "insight": line_insight.get_follower_stats(),
     }
     try:  # Starlette 0.29+ は (request, name, context)
         return templates.TemplateResponse(
@@ -93,7 +95,9 @@ def system_home(request: Request):
 @router.get("/api/system/analytics")
 def api_analytics(request: Request):
     _require_system_admin(request)
-    return admin_db.analytics()
+    data = admin_db.analytics()
+    data["insight"] = line_insight.get_follower_stats()
+    return data
 
 
 @router.post("/api/system/gym/create")

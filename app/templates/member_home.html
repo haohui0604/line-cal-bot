@@ -65,6 +65,8 @@ function loadLiffSdk(){
       <div class="muted">今日の収支</div>
       <div class="stat"><span id="tIntake">0</span> kcal 摂取
         <span class="muted">/</span> <span id="tBurn">0</span> kcal 消費</div>
+      <div class="muted" style="margin-top:6px">収支（摂取－消費）：<b id="tBalance">—</b></div>
+      <div class="muted">目標との差（目標－摂取）：<b id="tDiff">—</b></div>
       <div class="muted">P <span id="tP">0</span>g ・ F <span id="tF">0</span>g
         ・ C <span id="tC">0</span>g</div>
     </div>
@@ -167,6 +169,11 @@ async function api(path, body){
   return res.json();
 }
 
+function _signed(v){
+  return (window.CalCharts && CalCharts.signedKcal)
+    ? CalCharts.signedKcal(v)
+    : ((v < 0 ? "−" : "+") + Math.round(Math.abs(v||0)).toLocaleString("ja-JP") + " kcal");
+}
 function fmt(v){ return Math.round(v || 0); }
 
 // ---- ログイン状態の取り直し（無限ループと行き止まりを防ぐ） ----
@@ -233,6 +240,18 @@ async function main(){
   document.getElementById("tIntake").textContent = fmt(s.today.intake_kcal);
   document.getElementById("tBurn").textContent =
     fmt(s.today.burn_kcal || s.today.burn);
+  { const _in = s.today.intake_kcal||0,
+        _bu = s.today.burn_kcal || s.today.burn || 0,
+        _tg = (s.today && s.today.target_kcal) || s.target_kcal;
+    const _bal = document.getElementById("tBalance");
+    if(_bal){ _bal.textContent = _signed(_in - _bu);
+      _bal.style.color = (_in - _bu) >= 0 ? "#10b981" : "#ef4444"; }
+    const _dif = document.getElementById("tDiff");
+    if(_dif){
+      if(_tg){ _dif.textContent = _signed(_tg - _in);
+        _dif.style.color = (_tg - _in) >= 0 ? "#10b981" : "#ef4444"; }
+      else { _dif.textContent = "未設定"; }
+    } }
   document.getElementById("tP").textContent = fmt(s.today.protein_g);
   document.getElementById("tF").textContent = fmt(s.today.fat_g);
   document.getElementById("tC").textContent = fmt(s.today.carb_g);
