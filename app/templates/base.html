@@ -38,6 +38,22 @@
   @media (max-width:720px){.grid2{grid-template-columns:1fr}}
   .stat{font-size:22px;font-weight:700}
   form.inline{display:inline}
+  .bctab{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px}
+  .bctab th{text-align:left;font-weight:400;color:var(--muted);width:6.5em;padding:4px 8px 4px 0;white-space:nowrap;vertical-align:top}
+  .bctab td{padding:4px 0}
+  .bctab tr+tr th,.bctab tr+tr td{border-top:1px solid var(--line)}
+  .kpi-line{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .kpi2 .lbl{color:var(--muted)}
+  .gi-line{flex-basis:100%;width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .gi-sep{color:#cbd5e1;padding:0 4px}
+  .pfc-empty{font-size:12px;color:var(--muted);margin-top:6px;line-height:1.6}
+  .kpi{display:flex;flex-wrap:wrap;gap:2px 16px;font-size:13px;line-height:1.9}
+  .kpi>span{white-space:nowrap}
+  .kpi .lbl{color:var(--muted)}
+  .notes{margin-top:10px;padding-top:8px;border-top:1px dashed var(--line);
+         font-size:12px;line-height:1.7;color:var(--muted)}
+  .subhead{font-size:13px;font-weight:700;color:#374151;margin:14px 0 2px}
+  canvas{display:block;margin:0 auto}
 </style>
 {% block head %}{% endblock %}
 </head>

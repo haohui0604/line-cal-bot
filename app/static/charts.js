@@ -33,6 +33,57 @@
     canvas.style.maxHeight = h + "px";
   }
 
+  /* 軸の共通スタイル: 目盛りは間引き・回転なし、グリッドは薄く */
+  const AX = {
+    x: { grid: { display: false },
+         ticks: { maxRotation: 0, minRotation: 0, autoSkip: true,
+                  maxTicksLimit: 7, font: { size: 10 } } },
+    y: { grid: { color: "#eef2f7", drawTicks: false },
+         border: { display: false },
+         ticks: { maxTicksLimit: 5, font: { size: 10 }, padding: 4 } }
+  };
+  const LEG = { legend: { labels: { boxWidth: 12, font: { size: 11 }, padding: 8 } } };
+  if (window.Chart) {
+    try { Chart.defaults.font.size = 11; Chart.defaults.color = "#6b7280"; } catch (e) {}
+  }
+
+  function _mergeSeries(sources) {
+
+    // 実測→繰越→推定 の優先順で 1 本の系列にまとめ、点ごとの見た目を返す
+
+    var n = 0, k, i2;
+
+    for (k = 0; k < sources.length; k++) { n = Math.max(n, (sources[k].data || []).length); }
+
+    var value = [], color = [], radius = [], bg = [], bw = [];
+
+    for (i2 = 0; i2 < n; i2++) {
+
+      value.push(null); color.push(null); radius.push(0); bg.push(null); bw.push(0);
+
+      for (k = 0; k < sources.length; k++) {
+
+        var arr = sources[k].data || [];
+
+        if (arr[i2] === null || arr[i2] === undefined) { continue; }
+
+        value[i2] = arr[i2]; color[i2] = sources[k].color; radius[i2] = sources[k].radius;
+
+        bg[i2] = sources[k].hollow ? "#ffffff" : sources[k].color;
+
+        bw[i2] = sources[k].hollow ? 2 : 0;
+
+        break;
+
+      }
+
+    }
+
+    return { value: value, color: color, radius: radius, bg: bg, bw: bw };
+
+  }
+
+
   window.CalCharts = {
     /* 体重推移: 変動が見えるよう y 軸を min-10% 〜 max+10% に絞る。
        目標体重があれば赤い破線を重ねる。 */
@@ -40,17 +91,19 @@
       opt = opt || {};
       const tw = num(d.target_weight);
       const vals = (d.weight || []).filter(function (v) { return v != null; });
-      const opts = { responsive: true };
+      const opts = { responsive: true, plugins: LEG,
+                     scales: { x: AX.x, y: Object.assign({}, AX.y) } };
       if (vals.length) {
         let lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
         if (tw != null) { lo = Math.min(lo, tw); hi = Math.max(hi, tw); }
         const pad = (hi - lo) * 0.1 || hi * 0.02 || 1;
-        opts.scales = { y: { min: +(lo - pad).toFixed(1),
-                             max: +(hi + pad).toFixed(1) } };
+        opts.scales.y.min = +(lo - pad).toFixed(1);
+        opts.scales.y.max = +(hi + pad).toFixed(1);
       }
       const ds = [{
         label: "体重 kg", data: d.weight, borderColor: "#3b82f6",
-        backgroundColor: "#3b82f6", tension: .3, pointRadius: 2, spanGaps: true
+        backgroundColor: "#3b82f6", tension: .3, pointRadius: 1.5,
+        pointHoverRadius: 4, spanGaps: true
       }];
       if (tw != null) {
         ds.push({
@@ -93,7 +146,10 @@
           if (d && typeof d.goal_pace_week === "number") {
             _p.push("ペース " + d.goal_pace_week.toFixed(2) + " kg/週");
           }
-          _gi.textContent = _p.join("　／　");
+          var _lines = [[_p[0]], [_p[1]], _p.slice(2)].filter(function (a) { return a && a.length; });
+          _gi.innerHTML = _lines.map(function (a) {
+            return '<span class="gi-line">' + a.join('<span class="gi-sep">／</span>') + '</span>';
+          }).join('');
           if (d && d.goal_overdue && !d.goal_achieved) _gi.style.color = "#ef4444";
         }
       } catch (e) {}
@@ -147,7 +203,7 @@
         data: { labels: d.labels, datasets: ds },
         options: {
           responsive: true, interaction: { mode: "index" },
-          plugins: { legend: { labels: { boxWidth: 12, font: { size: 11 } } } }
+          plugins: LEG, scales: { x: AX.x, y: AX.y }
         }
       });
     },
@@ -156,158 +212,116 @@
     bodyFat: function (canvas, d) {
       const labels = (d && d.bc_labels) || [];
       if (!labels.length) return null;
-      const ds = [];
-      if (d.bc_has_fat) {
-        ds.push({
-          label: "体脂肪率 %（実測）", data: d.bc_body_fat,
-          borderColor: "#8b5cf6", backgroundColor: "#8b5cf6",
-          borderWidth: 2, tension: .3, pointRadius: 3, spanGaps: false
-        });
-      }
-      if (d.bc_has_fat_carry) {
-        ds.push({
-          label: "体脂肪率 %（繰越）", data: d.bc_body_fat_carry,
-          borderColor: "#a78bfa", backgroundColor: "#a78bfa",
-          borderWidth: 2, borderDash: [6, 4], tension: .3,
-          pointRadius: 2, spanGaps: false
-        });
-      }
-      if (d.bc_has_fat_est) {
-        ds.push({
-          label: "体脂肪率 %（BMIからの推定）", data: d.bc_body_fat_est,
-          borderColor: "#c4b5fd", backgroundColor: "#c4b5fd",
-          borderWidth: 2, borderDash: [2, 3], tension: .3,
-          pointRadius: 0, spanGaps: false
-        });
-      }
-      if (!ds.length) return null;
+      const _m = _mergeSeries([
+        { data: d.bc_body_fat,       color: "#7c3aed", radius: 4.5 },
+        { data: d.bc_body_fat_carry, color: "#a78bfa", radius: 3, hollow: true },
+        { data: d.bc_body_fat_est,   color: "#c4b5fd", radius: 2 }
+      ]);
+      if (!_m.value.some(function (v) { return v !== null; })) return null;
       _fixBox(canvas, 160);
       return new Chart(canvas, {
         type: "line",
-        data: { labels: labels, datasets: ds },
+        data: { labels: labels, datasets: [{
+          label: "体脂肪率 %", data: _m.value,
+          borderColor: "#7c3aed", backgroundColor: "#7c3aed", borderWidth: 2,
+          tension: .3, spanGaps: true, fill: false,
+          pointBackgroundColor: _m.bg, pointBorderColor: _m.color, pointBorderWidth: _m.bw,
+          pointRadius: _m.radius, pointHoverRadius: 5
+        }] },
         options: {
           responsive: true, maintainAspectRatio: false,
-          plugins: { legend: { display: true,
-            labels: { boxWidth: 12, font: { size: 11 } } } },
-          scales: { y: { ticks: { callback: function (v) { return v + "%"; } } } }
+          plugins: { legend: { display: true, position: "bottom",
+            labels: { usePointStyle: true, boxWidth: 9, boxHeight: 9, padding: 10, font: { size: 11 },
+              generateLabels: function () { return [
+                { text: "実測", fillStyle: "#7c3aed", strokeStyle: "#7c3aed", lineWidth: 0,
+                  pointStyle: "circle", boxWidth: 11, boxHeight: 11 },
+                { text: "繰越", fillStyle: "#ffffff", strokeStyle: "#a78bfa", lineWidth: 2,
+                  pointStyle: "circle", boxWidth: 8, boxHeight: 8 },
+                { text: "推定（BMIから）", fillStyle: "#c4b5fd", strokeStyle: "#c4b5fd", lineWidth: 0,
+                  pointStyle: "circle", boxWidth: 6, boxHeight: 6 }
+              ]; } } },
+            onClick: function () {} },
+          scales: { x: AX.x,
+            y: { grid: { color: "#eef2f7", drawTicks: false }, border: { display: false },
+                 ticks: { maxTicksLimit: 4, font: { size: 10 }, padding: 4,
+                          callback: function (v) { return v + "%"; } } } }
         }
       });
     },
 
-    /* 筋肉量の推移: 実測=実線 / 繰越=破線 / 除脂肪量の推定=点線 */
+
     muscle: function (canvas, d) {
       const labels = (d && d.bc_labels) || [];
       if (!labels.length) return null;
-      const ds = [];
-      if (d.bc_has_muscle_measured) {
-        ds.push({
-          label: "筋肉量 kg（実測）", data: d.bc_muscle_measured,
-          borderColor: "#0ea5e9", backgroundColor: "#0ea5e9",
-          borderWidth: 2, tension: .3, pointRadius: 3, spanGaps: false
-        });
-      }
-      if (d.bc_has_muscle_carry) {
-        ds.push({
-          label: "筋肉量 kg（繰越）", data: d.bc_muscle_carry,
-          borderColor: "#7dd3fc", backgroundColor: "#7dd3fc",
-          borderWidth: 2, borderDash: [6, 4], tension: .3,
-          pointRadius: 2, spanGaps: false
-        });
-      }
-      if (d.bc_has_muscle_estimated) {
-        ds.push({
-          label: "除脂肪量（推定）", data: d.bc_muscle_estimated,
-          borderColor: "#94a3b8", backgroundColor: "#94a3b8",
-          borderWidth: 2, borderDash: [2, 3], tension: .3,
-          pointRadius: 0, spanGaps: false
-        });
-      }
-      if (!ds.length) return null;
+      const _m = _mergeSeries([
+        { data: d.bc_muscle_measured, color: "#0284c7", radius: 4.5 },
+        { data: d.bc_muscle_carry,    color: "#7dd3fc", radius: 3, hollow: true },
+        { data: d.bc_muscle_estimated, color: "#94a3b8", radius: 2 }
+      ]);
+      if (!_m.value.some(function (v) { return v !== null; })) return null;
       _fixBox(canvas, 170);
       return new Chart(canvas, {
         type: "line",
-        data: { labels: labels, datasets: ds },
+        data: { labels: labels, datasets: [{
+          label: "筋肉量 kg", data: _m.value,
+          borderColor: "#0284c7", backgroundColor: "#0284c7", borderWidth: 2,
+          tension: .3, spanGaps: true, fill: false,
+          pointBackgroundColor: _m.bg, pointBorderColor: _m.color, pointBorderWidth: _m.bw,
+          pointRadius: _m.radius, pointHoverRadius: 5
+        }] },
         options: {
           responsive: true, maintainAspectRatio: false,
-          plugins: { legend: { display: true,
-            labels: { boxWidth: 12, font: { size: 11 } } } },
-          scales: { y: { ticks: { callback: function (v) { return v + "kg"; } } } }
+          plugins: { legend: { display: true, position: "bottom",
+            labels: { usePointStyle: true, boxWidth: 9, boxHeight: 9, padding: 10, font: { size: 11 },
+              generateLabels: function () { return [
+                { text: "実測", fillStyle: "#0284c7", strokeStyle: "#0284c7", lineWidth: 0,
+                  pointStyle: "circle", boxWidth: 11, boxHeight: 11 },
+                { text: "繰越", fillStyle: "#ffffff", strokeStyle: "#7dd3fc", lineWidth: 2,
+                  pointStyle: "circle", boxWidth: 8, boxHeight: 8 },
+                { text: "推定", fillStyle: "#94a3b8", strokeStyle: "#94a3b8", lineWidth: 0,
+                  pointStyle: "circle", boxWidth: 6, boxHeight: 6 }
+              ]; } } },
+            onClick: function () {} },
+          scales: { x: AX.x,
+            y: { grid: { color: "#eef2f7", drawTicks: false }, border: { display: false },
+                 ticks: { maxTicksLimit: 4, font: { size: 10 }, padding: 4,
+                          callback: function (v) { return v + "kg"; } } } }
         }
       });
     },
 
     /* 体脂肪率・BMI・筋肉量のテキスト（下回る場合は必ず「−」表記） */
     bodyCompText: function (d, ids) {
-      ids = ids || {};
-      d = d || {};
-      function set(id, txt, color) {
-        const e = document.getElementById(id);
-        if (!e) return;
-        e.textContent = txt;
-        if (color) e.style.color = color;
-      }
-      function f1(v) { const n = num(v); return n === null ? null : n.toFixed(1); }
-      function signed(v, unit) {
-        const n = num(v);
-        if (n === null) return "—";
-        return (n > 0 ? "+" : n < 0 ? "−" : "±")
-             + Math.abs(n).toFixed(1) + " " + unit;
-      }
-      const fat = num(d.bc_fat_current);
-      const src = d.bc_fat_source;
-      let tag = "";
-      if (fat !== null) {
-        if (src === "measured") {
-          tag = "（実測 " + (d.bc_fat_last_date || "") + "・"
-              + signed(d.bc_fat_delta, "%") + "）";
-        } else if (src === "carry") {
-          tag = "（繰越・最終実測 " + (d.bc_fat_last_date || "") + "）";
-        } else {
-          tag = "（BMIからの推定）";
+      function set(id, v) { var e = document.getElementById(id); if (e) { e.textContent = v; } }
+      var f = (d && typeof d.bc_fat_current === "number") ? d.bc_fat_current : null;
+      set("bcFat", f === null ? "—" : f.toFixed(1) + " %");
+      var fd = (d && typeof d.bc_fat_delta === "number") ? d.bc_fat_delta : null;
+      var de = document.getElementById("bcFatDelta");
+      if (de) {
+        if (fd === null) { de.textContent = ""; }
+        else {
+          de.textContent = "（" + (d.bc_fat_source === "measured" ? "実測" : "推定") + " "
+            + String(d.bc_fat_last_date || "").slice(5) + "・"
+            + (fd > 0 ? "+" : fd < 0 ? "−" : "±") + Math.abs(fd).toFixed(1) + " %）";
+          de.style.color = fd < 0 ? "#10b981" : (fd > 0 ? "#ef4444" : "");
         }
       }
-      set(ids.fat || "bcFat", fat === null ? "—" : fat.toFixed(1) + " %", "");
-      set(ids.fatDelta || "bcFatDelta", tag,
-          src === "measured" ? (num(d.bc_fat_delta) > 0 ? "#ef4444"
-            : (num(d.bc_fat_delta) < 0 ? "#10b981" : "")) : "");
-
-      const bmi = num(d.bc_bmi_current);
-      set(ids.bmi || "bcBmi", bmi === null ? "—" : bmi.toFixed(1), "");
-      set(ids.bmiCat || "bcBmiCat",
-          bmi === null ? "" : "（" + (d.bc_bmi_category || "")
-            + (num(d.bc_bmi_target) !== null ? "・目標 " + num(d.bc_bmi_target).toFixed(1) : "")
-            + "）",
-          bmi !== null && bmi >= 25 ? "#ef4444" : "");
-
-      const mm = num(d.bc_muscle_measured_current);
-      set(ids.muscleMeasured || "bcMuscle",
-          mm === null ? "—" : mm.toFixed(1) + " kg", "");
-      const me = num(d.bc_lean_current !== undefined ? d.bc_lean_current
-                                                     : d.bc_muscle_estimated_current);
-      set(ids.muscleEstimated || "bcEst", me === null ? "—" : me.toFixed(1) + " kg", "");
-      const fm = num(d.bc_fat_mass_current);
-      set(ids.fatMass || "bcFatMass", fm === null ? "—" : fm.toFixed(1) + " kg", "");
-
-      const note = document.getElementById(ids.note || "bcNote");
-      if (note) {
-        const parts = [];
-        if (fat === null) {
-          parts.push("体脂肪率の記録がまだありません。体組成計の写真を送るか、"
-                     + "「体重 72 体脂肪18」の形式で送ると表示されます。");
-          if (!d.bc_has_body) {
-            parts.push("※ 身長・年齢・性別が未登録のためBMIからの推定もできません。"
-                       + "LINEで「身体情報」と送ると登録できます。");
-          }
-        } else {
-          parts.push("体脂肪率: 実線＝実測、破線＝直前の実測の繰越、"
-                     + "点線＝BMI・年齢・性別からの推定（誤差 ±4% 程度）。");
-          parts.push("除脂肪量（推定）＝体重×(1−体脂肪率)で、脂肪以外のすべて"
-                     + "（骨・内臓・水分）を含むため、体組成計の筋肉量より大きく出ます。");
-          if (!d.bc_has_muscle_measured) {
-            parts.push("体組成計の筋肉量は未記録です。");
-          }
-        }
-        note.textContent = parts.join(" ");
+      var b = (d && typeof d.bc_bmi_current === "number") ? d.bc_bmi_current : null;
+      set("bcBmi", b === null ? "—" : b.toFixed(1));
+      var cat = (d && d.bc_bmi_category) ? d.bc_bmi_category : "";
+      var tg = (d && typeof d.bc_bmi_target === "number") ? "・目標 " + d.bc_bmi_target.toFixed(1) : "";
+      var ce = document.getElementById("bcBmiCat");
+      if (ce) {
+        ce.textContent = (cat || tg) ? "（" + cat + tg + "）" : "";
+        ce.style.color = (b !== null && b >= 25) ? "#ef4444" : "";
+      }
+      var mu = (d && typeof d.bc_muscle_measured_current === "number") ? d.bc_muscle_measured_current : null;
+      set("bcMuscle", mu === null ? "—" : mu.toFixed(1) + " kg");
+      var fm = (d && typeof d.bc_fat_mass_current === "number") ? d.bc_fat_mass_current : null;
+      set("bcFatMass", fm === null ? "—" : fm.toFixed(1) + " kg");
+      var n = document.getElementById("bcNote");
+      if (n) {
+        n.textContent = "入力があれば実測値、入力がなければ性別・年齢・身長から推定した値を表示しています（推定値は目安です）。";
       }
     },
 

@@ -92,36 +92,34 @@ function loadLiffSdk(){
     </div>
     <div class="card">
       <b>⚖️ 体重推移（14日）</b>
-      <div class="pfc-line" style="margin-top:4px">
-        現在の体重: <b id="wCurrent">—</b>
-        <span class="muted" id="wCurrentDate"></span>
-        　／　増減（期間初日比）: <b id="wDelta">—</b>
-        <span class="muted" id="wBaseDate"></span>
-        <span id="wTargetWrap" style="display:none">　／　目標体重: <b id="wTarget">—</b></span>
+      <div class="kpi2" style="margin-top:6px;font-size:13px;line-height:1.9">
+        <div class="kpi-line"><span class="lbl">現在</span> <b id="wCurrent">—</b> <span class="muted" id="wCurrentDate"></span></div>
+        <div class="kpi-line"><span class="lbl">増減</span> <b id="wDelta">—</b> <span class="muted" id="wBaseDate"></span></div>
+        <div class="kpi-line" id="wTargetWrap" style="display:none"><span class="lbl">目標体重</span> <b id="wTarget">—</b></div>
       </div>
-      <div class="pfc-line muted" id="wGoalInfo" style="margin-top:4px"></div>
+      <div class="kpi muted" id="wGoalInfo" style="margin-top:2px"></div>
       <canvas id="weightChart" height="130"></canvas>
     </div>
 
     <div class="card">
       <b>🧍 体脂肪率・筋肉量の推移</b>
-      <div class="pfc-line" style="margin-top:4px">
-        体脂肪率: <b id="bcFat">—</b><span class="muted" id="bcFatDelta"></span>
-        　／　BMI: <b id="bcBmi">—</b><span class="muted" id="bcBmiCat"></span>
-      </div>
-      <div class="pfc-line">
-        筋肉量（実測）: <b id="bcMuscle">—</b>
-        　／　除脂肪量（推定）: <b id="bcEst">—</b>
-        　／　体脂肪量: <b id="bcFatMass">—</b>
-      </div>
-      <div class="muted" id="bcNote" style="margin:4px 0 0"></div>
+      <table class="bctab">
+        <tr><th>体脂肪率</th><td><b id="bcFat">—</b><span class="muted" id="bcFatDelta"></span></td></tr>
+        <tr><th>BMI</th><td><b id="bcBmi">—</b><span class="muted" id="bcBmiCat"></span></td></tr>
+        <tr><th>筋肉量</th><td><b id="bcMuscle">—</b></td></tr>
+        <tr><th>体脂肪量</th><td><b id="bcFatMass">—</b></td></tr>
+      </table>
+      <div class="subhead">体脂肪率（%）</div>
       <canvas id="bfChart" height="120"></canvas>
+      <div class="subhead">筋肉量（kg）</div>
       <canvas id="muChart" height="130"></canvas>
+      <div class="notes" id="bcNote"></div>
     </div>
 
     <div class="card">
       <b>🥧 PFCバランス推移（14日・%）</b>
       <canvas id="pfcChart" height="140"></canvas>
+      <div id="pfcEmpty" class="pfc-empty" style="display:none">P／F／C（たんぱく質・脂質・炭水化物）まで記録された日がないため、グラフは出していません。成分表の写真を送るか、栄養素つきの記録を入れると表示されます。</div>
     </div>
 
     <div class="tabs">
@@ -281,16 +279,30 @@ async function main(){
   try { CalCharts.muscle(document.getElementById("muChart"), s); } catch(e) { console.warn("[chart] muscle", e); }
   try { CalCharts.bodyCompText(s); } catch(e) { console.warn("[chart] bodyCompText", e); }
 
-  new Chart(document.getElementById("pfcChart"), {
-    type:"bar",
-    data:{ labels:s.labels, datasets:[
-      { label:"P", data:s.pfc_p, backgroundColor:"#06c755" },
-      { label:"F", data:s.pfc_f, backgroundColor:"#f59e0b" },
-      { label:"C", data:s.pfc_c, backgroundColor:"#3b82f6" }
-    ]},
-    options:{ responsive:true, scales:{
-      x:{stacked:true}, y:{stacked:true, max:100, ticks:{callback:v=>v+"%"}} } }
-  });
+  (function () {
+    var _D = s, _P = _D.pfc_p || [], _F = _D.pfc_f || [], _C = _D.pfc_c || [];
+    var _has = _P.concat(_F, _C).some(function (v2) { return (v2 || 0) > 0; });
+    var _cv = document.getElementById("pfcChart"), _em = document.getElementById("pfcEmpty");
+    if (!_has) {
+      if (_cv) { _cv.style.display = "none"; }
+      if (_em) { _em.style.display = "block"; }
+      return;
+    }
+    if (_em) { _em.style.display = "none"; }
+    if (_cv) { _cv.style.display = ""; }
+    try {
+      new Chart(_cv, {
+        type: "bar",
+        data: { labels: _D.labels, datasets: [
+          { label: "P（たんぱく質）", data: _P, backgroundColor: "#06c755" },
+          { label: "F（脂質）", data: _F, backgroundColor: "#f59e0b" },
+          { label: "C（炭水化物）", data: _C, backgroundColor: "#3b82f6" }] },
+        options: { responsive: true,
+          plugins: { legend: { position: "bottom", labels: { boxWidth: 10, font: { size: 11 } } } },
+          scales: { x: { stacked: true, ticks: { font: { size: 10 } } },
+            y: { stacked: true, max: 100, ticks: { callback: function (v2) { return v2 + "%"; }, font: { size: 10 } } } } } });
+    } catch (e) { console.warn("[chart] pfc", e); }
+  })();
 
   // コメント
   const c = await api("/api/me/comments", {cm_offset: 0});
