@@ -260,8 +260,9 @@ def save_weight(*, user_id: str, date: str, weight_kg: float, is_measured: int,
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id, date) DO UPDATE SET
               weight_kg=excluded.weight_kg, is_measured=excluded.is_measured,
-              body_fat_pct=excluded.body_fat_pct, muscle_kg=excluded.muscle_kg,
-              bmr_kcal=excluded.bmr_kcal
+              body_fat_pct=COALESCE(excluded.body_fat_pct, weight_logs.body_fat_pct),
+              muscle_kg=COALESCE(excluded.muscle_kg, weight_logs.muscle_kg),
+              bmr_kcal=COALESCE(excluded.bmr_kcal, weight_logs.bmr_kcal)
         """, (user_id, date, weight_kg, is_measured, body_fat_pct,
               muscle_kg, bmr_kcal, note))
 

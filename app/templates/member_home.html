@@ -263,7 +263,7 @@ async function main(){
         _tg = (s.today && s.today.target_kcal) || s.target_kcal;
     const _bal = document.getElementById("tBalance");
     if(_bal){ _bal.textContent = _signed(_in - _bu);
-      _bal.style.color = (_in - _bu) >= 0 ? "#10b981" : "#ef4444"; }
+      _bal.style.color = (_in - _bu) > 0 ? "#ef4444" : "#10b981"; }
     const _dif = document.getElementById("tDiff");
     if(_dif){
       if(_tg){ _dif.textContent = _signed(_in - _tg);

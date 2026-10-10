@@ -276,7 +276,7 @@ function render(d){
     const _bal = (d.intake_kcal||0) - (d.burn_kcal||0);
     const _bb = document.getElementById("balBalance");
     _bb.textContent = signKcal(_bal);
-    _bb.style.color = _bal >= 0 ? "#10b981" : "#ef4444";
+    _bb.style.color = _bal > 0 ? "#ef4444" : "#10b981";
     // 目標との差 = 摂取 − 目標（食べ過ぎたら「＋」＝赤）
     const _bd = document.getElementById("balDiff");
     if (d.target_kcal) {

@@ -39,7 +39,7 @@
   {% set _bu = (summary.get("burn_kcal") or summary.get("burn") or 0) %}
   {% set _tg = summary.get("target_kcal") %}
   {% set _d = ((_in - _tg)|round(0)|int) if _tg else 0 %}
-  <div class="muted" style="margin-top:6px">収支（摂取－消費）：<b>{{ ("%+d"|format((_in - _bu)|round(0)|int))|replace("-", "−") }} kcal</b></div>
+  <div class="muted" style="margin-top:6px">収支（摂取－消費）：<b><span style="color:{{ '#ef4444' if (_in - _bu) > 0 else '#10b981' }}">{{ ("%+d"|format((_in - _bu)|round(0)|int))|replace("-", "−") }} kcal</span></b></div>
   <div class="muted">目標との差（摂取－目標）：<b>{% if _tg %}<span style="color:{{ '#ef4444' if _d > 0 else '#10b981' }}">{{ '±0 kcal' if _d == 0 else ((('%+d'|format(_d))|replace('-', '−')) ~ ' kcal') }}</span>{% else %}未設定{% endif %}</b></div>
   <div class="muted">P {{ "%.0f"|format(summary.get("protein_g") or 0) }}g ・
     F {{ "%.0f"|format(summary.get("fat_g") or 0) }}g ・
