@@ -105,7 +105,9 @@ def get_conn():
 # 2回目以降に落ちてはいけない（migrations/*.sql の ALTER は再実行で失敗する）。
 ADDED_COLUMNS = {
     # 目標PFCのマスタ（たんぱく質は 008、脂質・炭水化物を後から追加）
-    "goal_profiles": {"fat_target_g": "REAL", "carb_target_g": "REAL"},
+        # 目標の設定日と期限（あとから追加）
+    "goal_profiles": {"fat_target_g": "REAL", "carb_target_g": "REAL",
+                      "goal_set_at": "TEXT", "target_date": "TEXT"},
     # --- システム管理 (010) ---
     "system_admins": {"created_by": "TEXT"},
     # ジムの論理削除（履歴は残す）

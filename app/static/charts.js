@@ -50,6 +50,36 @@
 
     /* 現在の体重・増減（下回る場合は必ず「−」表記）・目標体重 */
     weightText: function (ids, d) {
+      // __goal_info__: 目標の設定日・期限・残り・ペース
+      try {
+        var _gi = document.getElementById("wGoalInfo");
+        if (_gi) {
+          var _p = [];
+          if (d && d.goal_set_at) {
+            _p.push("設定日: " + d.goal_set_at + (d.goal_set_at_estimated ? "（推定）" : ""));
+          }
+          if (d && d.goal_target_date) {
+            var _l = "期限: " + d.goal_target_date;
+            if (typeof d.goal_days_left === "number") {
+              _l += (d.goal_days_left >= 0
+                ? "（あと " + d.goal_days_left + "日）"
+                : "（" + Math.abs(d.goal_days_left) + "日超過）");
+            }
+            _p.push(_l);
+          }
+          if (d && typeof d.goal_kg_left === "number") {
+            _p.push(d.goal_kg_left > 0
+              ? "残り " + d.goal_kg_left.toFixed(1) + " kg"
+              : "目標達成（" + Math.abs(d.goal_kg_left).toFixed(1) + " kg 超過）");
+          }
+          if (d && typeof d.goal_pace_week === "number") {
+            _p.push("ペース " + d.goal_pace_week.toFixed(2) + " kg/週");
+          }
+          _gi.textContent = _p.join("　／　");
+          if (d && d.goal_overdue && !d.goal_achieved) _gi.style.color = "#ef4444";
+        }
+      } catch (e) {}
+
       ids = ids || {};
       function set(id, txt, color) {
         const e = document.getElementById(id);

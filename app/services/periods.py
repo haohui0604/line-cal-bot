@@ -105,6 +105,11 @@ def build_summary(user_id: str, days: int = PAGE_DAYS,
     """
     days = max(1, min(int(days), 90))
     offset = max(0, min(int(offset), 52))
+    try:
+        from app.services.goals import goal_schedule
+        _gsch = goal_schedule(user_id)
+    except Exception:
+        _gsch = {}
     start, end = window(days, offset)
     labels, intake, burn, pfc = [], [], [], []
     for i in range(days):
@@ -299,6 +304,16 @@ def build_summary(user_id: str, days: int = PAGE_DAYS,
         "weight_current_date": wst["current_date"],
         "weight_base_date": wst["base_date"],
         "target_weight": target_weight,
+        # 目標の設定日・期限・残り・ペース
+        "goal_set_at": _gsch.get("set_at"),
+        "goal_set_at_estimated": _gsch.get("set_at_estimated"),
+        "goal_mode": _gsch.get("mode"),
+        "goal_target_date": _gsch.get("target_date"),
+        "goal_days_left": _gsch.get("days_left"),
+        "goal_kg_left": _gsch.get("kg_left"),
+        "goal_pace_week": _gsch.get("pace_kg_week"),
+        "goal_overdue": _gsch.get("overdue"),
+        "goal_achieved": _gsch.get("achieved"),
         # 体脂肪率・筋肉量（実測=実線 / 繰越=破線 / 推定=点線 の材料）
         "bc_labels": bc_labels,
         "bc_dates": bc_dates,

@@ -9,7 +9,7 @@
 """
 import logging
 import re
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from linebot.models import TextSendMessage
 
@@ -38,7 +38,8 @@ _pending: dict = {}            # user_id -> {"step": ..., ...}
 
 def save_profile(user_id: str, **fields) -> None:
     cols = ["goal_mode", "target_weight_kg", "goal_days", "calc_target_kcal",
-            "salt_target_g", "protein_target_g", "sex", "age", "height_cm"]
+            "salt_target_g", "protein_target_g", "sex", "age", "height_cm",
+            "goal_set_at", "target_date"]
     sets = {k: v for k, v in fields.items() if k in cols}
     with get_conn() as c:
         c.execute(
@@ -77,6 +78,9 @@ def _badge_from_row(p: Optional[dict]):
             detail = f"{float(tw):.1f}kg / {int(gd)}日"
         elif tw:
             detail = f"{float(tw):.1f}kg"
+        _tdl = str(p.get("target_date") or "")
+        if detail and len(_tdl) >= 10:
+            detail += "〜" + _tdl[5:10].replace("-", "/")
     elif mode == "salt":
         try:
             detail = f"{float(p.get('salt_target_g') or DEFAULT_SALT_G):.1f}g/日"
@@ -118,6 +122,82 @@ def list_goal_badges(user_ids) -> dict:
         b = _badge_from_row(d)
         if b:
             out[d["user_id"]] = b
+    return out
+
+
+def _plus_days(base_iso: str, days) -> Optional[str]:
+    """YYYY-MM-DD に日数を足した日付を返す（壊れていれば None）."""
+    try:
+        from datetime import date as _d, timedelta as _td
+        y, m, dd = (int(x) for x in str(base_iso)[:10].split("-"))
+        return (_d(y, m, dd) + _td(days=int(days))).isoformat()
+    except Exception:
+        return None
+
+
+def _days_between(a_iso: str, b_iso: str) -> Optional[int]:
+    try:
+        from datetime import date as _d
+        ay, am, ad = (int(x) for x in str(a_iso)[:10].split("-"))
+        by, bm, bd = (int(x) for x in str(b_iso)[:10].split("-"))
+        return (_d(by, bm, bd) - _d(ay, am, ad)).days
+    except Exception:
+        return None
+
+
+def _current_weight(user_id: str) -> Optional[float]:
+    """最新の実測体重（無ければ None）."""
+    try:
+        from app.services.db import fetch_weight_series
+        rows = fetch_weight_series(user_id, days=90) or []
+        for r in reversed(rows):
+            w = r.get("weight_kg")
+            if w:
+                return float(w)
+    except Exception:
+        pass
+    return None
+
+
+def goal_schedule(user_id: str) -> Dict[str, Any]:
+    """目標の設定日・期限と、残り日数／残りkg／週あたりペースを返す.
+
+    goal_set_at が無い既存データは updated_at で代用し、
+    set_at_estimated=True を立てる（画面では「（推定）」と表示）。
+    """
+    p = get_profile(user_id) or {}
+    out: Dict[str, Any] = {
+        "mode": p.get("goal_mode"), "set_at": None,
+        "set_at_estimated": False, "target_date": None,
+        "days_left": None, "kg_left": None, "pace_kg_week": None,
+        "overdue": False, "achieved": False}
+    if not p.get("goal_mode"):
+        return out
+    set_at = str(p.get("goal_set_at") or "").strip()
+    if len(set_at) < 10:
+        u = str(p.get("updated_at") or "")
+        set_at = u[:10] if len(u) >= 10 else ""
+        out["set_at_estimated"] = bool(set_at)
+    out["set_at"] = set_at or None
+    tdate = str(p.get("target_date") or "").strip()
+    if len(tdate) < 10 and set_at and p.get("goal_days"):
+        tdate = _plus_days(set_at, p.get("goal_days")) or ""
+    out["target_date"] = tdate[:10] if len(tdate) >= 10 else None
+    today = today_jst()
+    if out["target_date"]:
+        dl = _days_between(today, out["target_date"])
+        if dl is not None:
+            out["days_left"] = dl
+            out["overdue"] = dl < 0
+    if out["mode"] == "weight":
+        tw = p.get("target_weight_kg")
+        cur = _current_weight(user_id)
+        if tw and cur:
+            left = round(float(cur) - float(tw), 1)
+            out["kg_left"] = left
+            out["achieved"] = left <= 0
+            if not out["achieved"] and out["days_left"] and out["days_left"] > 0:
+                out["pace_kg_week"] = round(left / (out["days_left"] / 7.0), 2)
     return out
 
 
@@ -453,19 +533,24 @@ def handle_step(user_id: str, text: str) -> Optional[TextSendMessage]:
 
     if step == "confirm":
         if text == "目標確定":
+            _set = today_jst()
+            _tdate = _plus_days(_set, st["days"])
             save_profile(
                 user_id, goal_mode="weight",
                 target_weight_kg=st["target"], goal_days=st["days"],
                 calc_target_kcal=st["calc"],
                 sex=st.get("sex"), age=st.get("age"),
-                height_cm=st.get("height"))
+                height_cm=st.get("height"),
+                goal_set_at=_set, target_date=_tdate)
             set_goal(user_id=user_id, date=today_jst(),
                      target_kcal=st["calc"])
             _pending.pop(user_id, None)
             return TextSendMessage(text=(
                 f"✅ 設定しました！\n"
                 f"1日の目標摂取カロリー: {st['calc']:.0f}kcal\n"
-                f"（{st['target']}kg / {st['days']}日）\n\n"
+                f"（{st['target']}kg / {st['days']}日）\n"
+                f"📅 設定日: {_set}\n"
+                f"📅 期限: {_tdate}（{_set}から{st['days']}日後）\n\n"
                 "今後のコメントにもこの目標が反映されます。\n"
                 "変更したいときはまた「目的設定」と送ってください"))
         return start_wizard(user_id)
@@ -474,7 +559,8 @@ def handle_step(user_id: str, text: str) -> Optional[TextSendMessage]:
 
 
 def _finish_salt(user_id: str, st: dict) -> TextSendMessage:
-    save_profile(user_id, goal_mode="salt", salt_target_g=st["salt"])
+    save_profile(user_id, goal_mode="salt", salt_target_g=st["salt"],
+                 goal_set_at=today_jst())
     _pending.pop(user_id, None)
     return TextSendMessage(text=(
         f"✅ 設定しました！\n"
@@ -484,7 +570,8 @@ def _finish_salt(user_id: str, st: dict) -> TextSendMessage:
 
 def _finish_muscle(user_id: str, st: dict) -> TextSendMessage:
     protein = round(st["current"] * PROTEIN_PER_KG, 1)
-    save_profile(user_id, goal_mode="muscle", protein_target_g=protein)
+    save_profile(user_id, goal_mode="muscle", protein_target_g=protein,
+                 goal_set_at=today_jst())
     _pending.pop(user_id, None)
     return TextSendMessage(text=(
         f"✅ 設定しました！\n"
