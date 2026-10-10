@@ -274,12 +274,12 @@ async function main(){
   document.getElementById("tF").textContent = fmt(s.today.fat_g);
   document.getElementById("tC").textContent = fmt(s.today.carb_g);
 
-  CalCharts.calorie(document.getElementById("calChart"), s);
-  CalCharts.weight(document.getElementById("weightChart"), s);
-  CalCharts.weightText({}, s);
-  CalCharts.bodyFat(document.getElementById("bfChart"), s);
-  CalCharts.muscle(document.getElementById("muChart"), s);
-  CalCharts.bodyCompText(s);
+  try { CalCharts.calorie(document.getElementById("calChart"), s); } catch(e) { console.warn("[chart] calorie", e); }
+  try { CalCharts.weight(document.getElementById("weightChart"), s); } catch(e) { console.warn("[chart] weight", e); }
+  try { CalCharts.weightText({}, s); } catch(e) { console.warn("[chart] weightText", e); }
+  try { CalCharts.bodyFat(document.getElementById("bfChart"), s); } catch(e) { console.warn("[chart] bodyFat", e); }
+  try { CalCharts.muscle(document.getElementById("muChart"), s); } catch(e) { console.warn("[chart] muscle", e); }
+  try { CalCharts.bodyCompText(s); } catch(e) { console.warn("[chart] bodyCompText", e); }
 
   new Chart(document.getElementById("pfcChart"), {
     type:"bar",

@@ -160,12 +160,12 @@
   const res = await fetch("/api/trainer/members/{{ member_id }}/summary?days=14&offset={{ offset }}");
   if (res.ok) {
     const d = await res.json();
-    CalCharts.calorie(document.getElementById("calChart"), d);
-    CalCharts.weight(document.getElementById("weightChart"), d);
-    CalCharts.weightText({}, d);
-    CalCharts.bodyFat(document.getElementById("bfChart"), d);
-    CalCharts.muscle(document.getElementById("muChart"), d);
-    CalCharts.bodyCompText(d);
+    try { CalCharts.calorie(document.getElementById("calChart"), d); } catch(e) { console.warn("[chart] calorie", e); }
+    try { CalCharts.weight(document.getElementById("weightChart"), d); } catch(e) { console.warn("[chart] weight", e); }
+    try { CalCharts.weightText({}, d); } catch(e) { console.warn("[chart] weightText", e); }
+    try { CalCharts.bodyFat(document.getElementById("bfChart"), d); } catch(e) { console.warn("[chart] bodyFat", e); }
+    try { CalCharts.muscle(document.getElementById("muChart"), d); } catch(e) { console.warn("[chart] muscle", e); }
+    try { CalCharts.bodyCompText(d); } catch(e) { console.warn("[chart] bodyCompText", e); }
 
     new Chart(document.getElementById("pfcChart"), {
       type: "bar",

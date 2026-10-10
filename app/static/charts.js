@@ -15,6 +15,24 @@
     return n === null ? 0 : Math.round(n).toLocaleString("ja-JP");
   }
 
+  /* maintainAspectRatio:false のチャートは親の高さに追従するため、
+     高さを持たない親に置くとキャンバスが伸び続ける。固定高さの箱で包む。 */
+  function _fixBox(canvas, h) {
+    if (!canvas || !canvas.parentNode) return;
+    var box = canvas.parentElement;
+    if (!box || String(box.className || "").indexOf("chart-box") < 0) {
+      box = document.createElement("div");
+      box.className = "chart-box";
+      canvas.parentNode.insertBefore(box, canvas);
+      box.appendChild(canvas);
+    }
+    box.style.position = "relative";
+    box.style.width = "100%";
+    box.style.height = h + "px";
+    box.style.maxHeight = h + "px";
+    canvas.style.maxHeight = h + "px";
+  }
+
   window.CalCharts = {
     /* 体重推移: 変動が見えるよう y 軸を min-10% 〜 max+10% に絞る。
        目標体重があれば赤い破線を重ねる。 */
@@ -163,6 +181,7 @@
         });
       }
       if (!ds.length) return null;
+      _fixBox(canvas, 160);
       return new Chart(canvas, {
         type: "line",
         data: { labels: labels, datasets: ds },
@@ -204,6 +223,7 @@
         });
       }
       if (!ds.length) return null;
+      _fixBox(canvas, 170);
       return new Chart(canvas, {
         type: "line",
         data: { labels: labels, datasets: ds },
