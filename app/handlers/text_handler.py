@@ -538,6 +538,14 @@ def handle_text(user_id: str, text: str):
         # 0.04) 目的設定ウィザード
         if text == "目的設定":
             return goal_svc.start_wizard(user_id)
+
+        # 0.4b) 身体情報（性別・年齢・身長）→ BMI・体脂肪率の推定に使う
+        if text in ("身体情報", "BMI", "身長"):
+            return goal_svc.start_body_info(user_id)
+        if goal_svc.in_body_info(user_id):
+            _bm = goal_svc.handle_body_step(user_id, text)
+            if _bm is not None:
+                return _bm
         if goal_svc.in_wizard(user_id):
             out = goal_svc.handle_step(user_id, text)
             if out is not None:
@@ -722,8 +730,53 @@ def handle_text(user_id: str, text: str):
                     months = float(m4.group(1))
                     if months <= 0 or months > 36:
                         return TextSendMessage(text="0.5〜36ヶ月の範囲で入力してください")
+                st["data"]["months"] = months
+                st["step"] = 5
+                msg = TextSendMessage(text=(
+                    "Q5. 性別を教えてください\n"
+                    "（BMIと体脂肪率の推定に使います。消費カロリーの計算は"
+                    "活動量データを使うので、この情報は推定専用です）"))
+                msg.quick_reply = qr(msq("男性", "男性"), msq("女性", "女性"))
+                return msg
+
+            if st["step"] == 5:
+                if text not in ("男性", "女性"):
+                    msg = TextSendMessage(text="性別を選んでください")
+                    msg.quick_reply = qr(msq("男性", "男性"), msq("女性", "女性"))
+                    return msg
+                st["data"]["sex"] = "male" if text == "男性" else "female"
+                st["step"] = 6
+                return TextSendMessage(text="Q6. 年齢を数字で送ってください（例: 35）")
+
+            if st["step"] == 6:
+                try:
+                    a = int(float(text))
+                    if not (10 <= a <= 110):
+                        raise ValueError
+                except ValueError:
+                    return TextSendMessage(
+                        text="年齢は10〜110の数字で送ってください（例: 35）")
+                st["data"]["age"] = a
+                st["step"] = 7
+                return TextSendMessage(text="Q7. 身長を cm で送ってください（例: 172）")
+
+            if st["step"] == 7:
+                try:
+                    h = float(text)
+                    if not (80 <= h <= 250):
+                        raise ValueError
+                except ValueError:
+                    return TextSendMessage(
+                        text="身長は80〜250の数字で送ってください（例: 172）")
+                st["data"]["height"] = h
                 _setup_pending.pop(user_id)
-                return _finish_setup(user_id, st["data"], months)
+                try:
+                    goal_svc.save_profile(
+                        user_id, sex=st["data"].get("sex"),
+                        age=st["data"].get("age"), height_cm=h)
+                except Exception:
+                    logger.exception("save_profile failed in setup")
+                return _finish_setup(user_id, st["data"], st["data"].get("months"))
 
         # 0.6) 一括登録モード
         if text in ("一括", "一括登録", "import", "Import"):

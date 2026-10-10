@@ -103,6 +103,22 @@ function loadLiffSdk(){
     </div>
 
     <div class="card">
+      <b>🧍 体脂肪率・筋肉量の推移</b>
+      <div class="pfc-line" style="margin-top:4px">
+        体脂肪率: <b id="bcFat">—</b><span class="muted" id="bcFatDelta"></span>
+        　／　BMI: <b id="bcBmi">—</b><span class="muted" id="bcBmiCat"></span>
+      </div>
+      <div class="pfc-line">
+        筋肉量（実測）: <b id="bcMuscle">—</b>
+        　／　除脂肪量（推定）: <b id="bcEst">—</b>
+        　／　体脂肪量: <b id="bcFatMass">—</b>
+      </div>
+      <div class="muted" id="bcNote" style="margin:4px 0 0"></div>
+      <canvas id="bfChart" height="120"></canvas>
+      <canvas id="muChart" height="130"></canvas>
+    </div>
+
+    <div class="card">
       <b>🥧 PFCバランス推移（14日・%）</b>
       <canvas id="pfcChart" height="140"></canvas>
     </div>
@@ -118,7 +134,8 @@ function loadLiffSdk(){
     <button id="shareAssigned" class="btn btn-ghost btn-sm" onclick="setShare('assigned', this)">担当トレーナーのみ</button>
     <button id="shareGym" class="btn btn-ghost btn-sm" onclick="setShare('gym', this)">ジムのスタッフ全員</button>
   </div>
-  <p class="muted" style="margin-top:6px">「ジムのスタッフ全員」を選ぶと、同じジムのトレーナー・管理者があなたの記録を閲覧できます（同意した日時を記録します）。</p>
+  <p class="muted" style="margin-top:6px">「ジムのスタッフ全員」を選ぶと、同じジムのトレーナー・管理者があなたの記録を閲覧できます（同意した日時を記録します）。共有されるのは体重・体脂肪率・摂取カロリーなどの記録です。</p>
+  <p class="muted" style="margin-top:6px">入力された体重・体脂肪率・性別・年齢・身長は、健康管理の表示とアドバイスのためだけに使用します。病歴・服薬などの健康状態は入力しないでください。</p>
 </div>
 
 <div id="paneComments" class="card"></div>
@@ -259,6 +276,9 @@ async function main(){
   CalCharts.calorie(document.getElementById("calChart"), s);
   CalCharts.weight(document.getElementById("weightChart"), s);
   CalCharts.weightText({}, s);
+  CalCharts.bodyFat(document.getElementById("bfChart"), s);
+  CalCharts.muscle(document.getElementById("muChart"), s);
+  CalCharts.bodyCompText(s);
 
   new Chart(document.getElementById("pfcChart"), {
     type:"bar",

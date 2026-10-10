@@ -11,7 +11,8 @@ from datetime import timedelta
 from typing import Any, Dict, Optional
 
 from app.services.dates import today_jst_date
-from app.services.db import fetch_day_summary, fetch_weight_series
+from app.services.db import (fetch_bodycomp_series, fetch_day_summary,
+                             fetch_weight_series)
 from app.services.day_view import pfc_percent_series
 
 PAGE_DAYS = 14      # 1ページ＝14日
@@ -121,6 +122,170 @@ def build_summary(user_id: str, days: int = PAGE_DAYS,
     wst = weight_stats(wseries)
     target_kcal, target_weight = _targets(user_id, _e)
 
+    # ---- 体脂肪率・筋肉量（実測 / 繰越 / BMI推定）----
+    try:
+        from app.services.goals import body_estimate, bmi_category, get_profile
+        _prof = get_profile(user_id) or {}
+    except Exception:
+        body_estimate, bmi_category, _prof = None, None, {}
+    _sex = _prof.get("sex")
+    _age = _prof.get("age")
+    _hgt = _prof.get("height_cm")
+    has_body = bool(_sex and _age and _hgt)
+
+    try:
+        _all = fetch_bodycomp_series(user_id, "0001-01-01", _e)
+    except Exception:
+        _all = []
+    _all = sorted(_all, key=lambda r: str(r.get("date") or ""))
+    _by_date = {str(r.get("date"))[:10]: r for r in _all}
+
+    # 体重系列（繰越済み）から日付と体重を取り出す
+    _days, _w_by_date = [], {}
+    for r in (wseries or []):
+        if isinstance(r, dict) and r.get("date"):
+            _d = str(r["date"])[:10]
+            _days.append(_d)
+            _w_by_date[_d] = r.get("weight_kg")
+    if not _days:
+        from datetime import date as _dt, timedelta as _td
+        try:
+            _sd = _dt.fromisoformat(str(_s)[:10])
+            _ed = _dt.fromisoformat(str(_e)[:10])
+            _days = [(_sd + _td(days=_k)).isoformat()
+                     for _k in range((_ed - _sd).days + 1)]
+        except Exception:
+            _days = sorted(_by_date.keys())
+
+    # 期間より前の実測を持ち込み（繰越の起点）
+    _lf = _lm = None
+    for r in _all:
+        if str(r.get("date"))[:10] < str(_s)[:10]:
+            if r.get("body_fat_pct") is not None:
+                _lf = float(r["body_fat_pct"])
+            if r.get("muscle_kg") is not None:
+                _lm = float(r["muscle_kg"])
+
+    (bc_labels, bc_dates, bc_fat, bc_fat_carry, bc_fat_est,
+     bc_mus_m, bc_mus_carry, bc_mus_e, bc_bmi) = ([], [], [], [], [],
+                                                  [], [], [], [])
+    for _d in _days:
+        _rec = _by_date.get(_d)
+        _fat_m = _mus_m = None
+        if _rec is not None:
+            if _rec.get("body_fat_pct") is not None:
+                _fat_m = float(_rec["body_fat_pct"])
+            if _rec.get("muscle_kg") is not None:
+                _mus_m = float(_rec["muscle_kg"])
+        _w = _w_by_date.get(_d)
+        if _w is None and _rec is not None and _rec.get("weight_kg") is not None:
+            _w = float(_rec["weight_kg"])
+
+        _bmi_v = None
+        if has_body and _w is not None:
+            try:
+                _bmi_v = round(float(_w) / ((float(_hgt) / 100.0) ** 2), 1)
+            except (TypeError, ValueError, ZeroDivisionError):
+                _bmi_v = None
+
+        # 体脂肪率: 実測 → 繰越 → （計測が無い期間は）BMIからの推定
+        _est_fat = None
+        if _fat_m is None and has_body and body_estimate:
+            _e0 = body_estimate(_w, _hgt, _age, _sex)
+            _est_fat = _e0["body_fat_pct"] if _e0 else None
+        if _fat_m is not None:
+            _lf = _fat_m
+            _c_fat = None
+        elif _lf is not None:
+            _c_fat = _lf
+        else:
+            _c_fat = None
+        _eff_fat = _fat_m if _fat_m is not None else _c_fat
+        if _eff_fat is None:
+            _eff_fat = _est_fat
+            _c_fat = None
+            _use_est = _est_fat
+        else:
+            _use_est = None
+
+        # 筋肉量（実測）と繰越
+        if _mus_m is not None:
+            _lm = _mus_m
+            _c_mus = None
+        else:
+            _c_mus = _lm
+
+        # 除脂肪量 = 体重 × (1 − 体脂肪率)。骨格筋量ではない。
+        _lean = None
+        if _eff_fat is not None and _w is not None:
+            try:
+                _lean = round(float(_w) * (1.0 - float(_eff_fat) / 100.0), 1)
+            except (TypeError, ValueError):
+                _lean = None
+
+        bc_labels.append(_d[5:])
+        bc_dates.append(_d)
+        bc_fat.append(_fat_m)
+        bc_fat_carry.append(_c_fat)
+        bc_fat_est.append(_use_est)
+        bc_mus_m.append(_mus_m)
+        bc_mus_carry.append(_c_mus)
+        bc_mus_e.append(_lean)
+        bc_bmi.append(_bmi_v)
+
+    def _last(seq):
+        for v in reversed(seq or []):
+            if v is not None:
+                return v
+        return None
+
+    def _first(seq):
+        for v in (seq or []):
+            if v is not None:
+                return v
+        return None
+
+    _fat_m_c, _fat_m_b = _last(bc_fat), _first(bc_fat)
+    _mm_c, _mm_b = _last(bc_mus_m), _first(bc_mus_m)
+    _eff_c = _last(bc_fat_carry) if _last(bc_fat_carry) is not None else None
+    _fat_eff_seq = [v for v in
+                    (bc_fat[i] if bc_fat[i] is not None
+                     else (bc_fat_carry[i] if bc_fat_carry[i] is not None
+                           else bc_fat_est[i])
+                     for i in range(len(bc_fat)))]
+    _fat_eff_c = _last(_fat_eff_seq)
+    if _fat_m_c is not None:
+        _fat_src = "measured"
+    elif _last(bc_fat_carry) is not None:
+        _fat_src = "carry"
+    elif _last(bc_fat_est) is not None:
+        _fat_src = "estimate"
+    else:
+        _fat_src = None
+    _fat_date = None
+    if _fat_m_c is not None:
+        for _i in range(len(bc_fat) - 1, -1, -1):
+            if bc_fat[_i] == _fat_m_c:
+                _fat_date = bc_dates[_i]
+                break
+    _lean_c = _last(bc_mus_e)
+    _w_eff_c = None
+    for _i in range(len(_days) - 1, -1, -1):
+        if _w_by_date.get(_days[_i]) is not None:
+            _w_eff_c = float(_w_by_date[_days[_i]])
+            break
+    _fat_mass_c = None
+    if _fat_eff_c is not None and _w_eff_c is not None:
+        _fat_mass_c = round(_w_eff_c * float(_fat_eff_c) / 100.0, 1)
+    _bmi_c = _last(bc_bmi)
+    _bmi_target = None
+    if target_weight is not None and has_body:
+        try:
+            _bmi_target = round(float(target_weight) / ((float(_hgt) / 100.0) ** 2), 1)
+        except (TypeError, ValueError, ZeroDivisionError):
+            _bmi_target = None
+
+
     return {
         "labels": labels, "intake": intake, "burn": burn,
         "target_kcal": target_kcal,
@@ -134,5 +299,41 @@ def build_summary(user_id: str, days: int = PAGE_DAYS,
         "weight_current_date": wst["current_date"],
         "weight_base_date": wst["base_date"],
         "target_weight": target_weight,
-        **pfc_percent_series(pfc),
+        # 体脂肪率・筋肉量（実測=実線 / 繰越=破線 / 推定=点線 の材料）
+        "bc_labels": bc_labels,
+        "bc_dates": bc_dates,
+        "bc_body_fat": bc_fat,
+        "bc_body_fat_carry": bc_fat_carry,
+        "bc_body_fat_est": bc_fat_est,
+        "bc_muscle_measured": bc_mus_m,
+        "bc_muscle_carry": bc_mus_carry,
+        "bc_muscle_estimated": bc_mus_e,
+        "bc_bmi": bc_bmi,
+        "bc_has_fat": any(v is not None for v in bc_fat),
+        "bc_has_fat_carry": any(v is not None for v in bc_fat_carry),
+        "bc_has_fat_est": any(v is not None for v in bc_fat_est),
+        "bc_has_muscle_measured": any(v is not None for v in bc_mus_m),
+        "bc_has_muscle_carry": any(v is not None for v in bc_mus_carry),
+        "bc_has_muscle_estimated": any(v is not None for v in bc_mus_e),
+        "bc_has_body": has_body,
+        "bc_height_cm": _hgt,
+        "bc_sex": _sex,
+        "bc_age": _age,
+        "bc_fat_current": _fat_eff_c,
+        "bc_fat_source": _fat_src,
+        "bc_fat_delta": (round(_fat_m_c - _fat_m_b, 1)
+                         if (_fat_m_c is not None and _fat_m_b is not None) else None),
+        "bc_fat_last_date": _fat_date,
+        "bc_fat_mass_current": _fat_mass_c,
+        "bc_muscle_measured_current": _mm_c,
+        "bc_muscle_measured_delta": (round(_mm_c - _mm_b, 1)
+                                     if (_mm_c is not None and _mm_b is not None) else None),
+        "bc_muscle_carry_current": _last(bc_mus_carry),
+        "bc_muscle_estimated_current": _lean_c,
+        "bc_lean_current": _lean_c,
+        "bc_bmi_current": _bmi_c,
+        "bc_bmi_category": (bmi_category(_bmi_c) if (bmi_category and _bmi_c) else None),
+        "bc_bmi_target": _bmi_target,
+        "bc_weight_current": _w_eff_c,
+        **pfc_percent_series(pfc),        **pfc_percent_series(pfc),
     }

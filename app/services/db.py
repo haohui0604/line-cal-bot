@@ -473,6 +473,36 @@ def fetch_weight_series(user_id: str, days: int = 7):
     return result
 
 
+def fetch_bodycomp_series(user_id: str, start: str, end: str):
+    """期間内の体組成の実測記録（実測日のみ・繰越なし）.
+
+    体脂肪率や筋肉量は毎日測るものではないため、体重グラフのような繰越補完は
+    せず、実際に記録がある日だけを返す（記録が無い日は線が途切れる）。
+    体重だけ記録された日は体組成グラフには載せない。
+    """
+    want = ["date", "weight_kg", "body_fat_pct", "muscle_kg", "bmr_kcal"]
+    with get_conn() as c:
+        have = table_columns(c, "weight_logs")
+        cols = [x for x in want if (not have) or (x in have)]
+        if "date" not in cols or "weight_kg" not in cols:
+            return []
+        sel = ", ".join(cols)
+        try:
+            rows = c.execute(
+                f"SELECT {sel} FROM weight_logs"
+                " WHERE user_id=? AND date>=? AND date<=? ORDER BY date",
+                (user_id, start, end)).fetchall()
+        except Exception:
+            return []
+    out = []
+    for r in rows:
+        d = dict(r)
+        if d.get("body_fat_pct") is None and d.get("muscle_kg") is None:
+            continue
+        out.append(d)
+    return out
+
+
 def fetch_entries_for_date(user_id: str, date: str) -> List[Dict[str, Any]]:
     """指定日の食事明細を返す（AIコンテキスト注入用）."""
     with get_conn() as c:

@@ -301,11 +301,17 @@ def _finish_weight(user_id: str, st: dict) -> TextSendMessage:
     t_kcal = max(MIN_TARGET_KCAL, maintenance - deficit)
     st["calc"] = round(t_kcal, 1)
     st["step"] = "confirm"
+    _est = body_estimate(cur, st.get("height"), st.get("age"), st.get("sex"))
+    extra = ""
+    if _est:
+        extra = (f"BMI: {_est['bmi']:.1f}（{_est['bmi_category']}）"
+                 f" / 体脂肪率の推定: {_est['body_fat_pct']:.1f}%\n")
     msg = TextSendMessage(text=(
         f"📋 計算結果\n"
         f"現在 {cur}kg → 目標 {target}kg（{-deficit:.0f}kcal/日の赤字）\n"
-        f"消費カロリー見込み: {maintenance:.0f}kcal（{via}）\n\n"
-        f"➡ 1日の目標摂取カロリー: 約{t_kcal:.0f}kcal\n\n"
+        f"消費カロリー見込み: {maintenance:.0f}kcal（{via}）\n"
+        + extra +
+        f"\n➡ 1日の目標摂取カロリー: 約{t_kcal:.0f}kcal\n\n"
         "この目標で設定しますか？"))
     msg.quick_reply = qr(msq("✅ 設定する", "目標確定"),
                          msq("やり直す", "目的設定"))
@@ -396,6 +402,7 @@ def handle_step(user_id: str, text: str) -> Optional[TextSendMessage]:
         msg = TextSendMessage(text=(
             "活動量のデータがまだ無いので、身体情報から消費カロリーを推定します。\n"
             "性別を教えてください"))
+
         msg.quick_reply = qr(msq("男性", "男性"), msq("女性", "女性"))
         return msg
 
@@ -484,3 +491,166 @@ def _finish_muscle(user_id: str, st: dict) -> TextSendMessage:
         f"体重 {st['current']}kg × {PROTEIN_PER_KG}g\n"
         f"➡ たんぱく質目標: {protein:.0f}g/日\n\n"
         "今後のコメントにたんぱく質の観点が反映されます"))
+
+
+# ---------- BMI・体脂肪率の推定 ----------
+
+def bmi_category(v: Optional[float]) -> Optional[str]:
+    """BMIの区分（日本肥満学会の基準）."""
+    if v is None:
+        return None
+    if v < 18.5:
+        return "低体重（やせ）"
+    if v < 25:
+        return "普通体重"
+    if v < 30:
+        return "肥満（1度）"
+    if v < 35:
+        return "肥満（2度）"
+    if v < 40:
+        return "肥満（3度）"
+    return "肥満（4度）"
+
+
+def body_estimate(weight_kg, height_cm, age, sex) -> Optional[dict]:
+    """BMIと、BMIからの体脂肪率の推定（Deurenberg 1991）.
+
+    BF% = 1.20 × BMI + 0.23 × 年齢 − 10.8 × 性別（男=1 / 女=0） − 5.4
+    標準誤差 4.1% と大きく、体組成計の実測値の代わりにはならない。
+    体重・身長・年齢・性別の4つが揃ったときだけ算出する。
+    """
+    try:
+        w = float(weight_kg)
+        h = float(height_cm)
+        a = int(float(age))
+    except (TypeError, ValueError):
+        return None
+    if not (10 <= w <= 400) or not (80 <= h <= 250) or not (10 <= a <= 110):
+        return None
+    if sex not in ("male", "female"):
+        return None
+    bmi = w / ((h / 100.0) ** 2)
+    if not (8 <= bmi <= 90):
+        return None
+    fat = 1.20 * bmi + 0.23 * a - 10.8 * (1 if sex == "male" else 0) - 5.4
+    fat = max(3.0, min(60.0, fat))
+    fat_mass = w * fat / 100.0
+    return {"bmi": round(bmi, 1), "bmi_category": bmi_category(bmi),
+            "body_fat_pct": round(fat, 1), "fat_mass_kg": round(fat_mass, 1),
+            "lean_mass_kg": round(w - fat_mass, 1), "source": "bmi_estimate"}
+
+
+def body_profile(user_id: str) -> dict:
+    """性別・年齢・身長の登録状況."""
+    p = get_profile(user_id) or {}
+    return {"sex": p.get("sex"), "age": p.get("age"),
+            "height_cm": p.get("height_cm"),
+            "complete": bool(p.get("sex") and p.get("age") and p.get("height_cm"))}
+
+
+def body_estimate_for_user(user_id: str) -> Optional[dict]:
+    pr = body_profile(user_id)
+    return body_estimate(_latest_weight(user_id), pr.get("height_cm"),
+                         pr.get("age"), pr.get("sex"))
+
+
+# ---------- 身体情報の登録（性別・年齢・身長） ----------
+
+_body_pending: dict = {}
+
+
+def in_body_info(user_id: str) -> bool:
+    return user_id in _body_pending
+
+
+def start_body_info(user_id: str) -> TextSendMessage:
+    pr = body_profile(user_id)
+    _body_pending[user_id] = {"step": "sex"}
+    cur = []
+    if pr["sex"]:
+        cur.append("性別: " + ("男性" if pr["sex"] == "male" else "女性"))
+    if pr["age"]:
+        cur.append(f"年齢: {pr['age']}歳")
+    if pr["height_cm"]:
+        cur.append(f"身長: {pr['height_cm']:.0f}cm")
+    head = ("🧍 身体情報の登録\n"
+            "入力いただく性別・年齢・身長は、BMIと体脂肪率の推定、"
+            "および健康管理のアドバイスにのみ使用します。"
+            "病歴・服薬などの健康状態は入力しないでください。\n")
+    if cur:
+        head += "現在の登録: " + " / ".join(cur) + "\n"
+    msg = TextSendMessage(text=head + "\n性別を選んでください（『やめる』で中止）")
+    msg.quick_reply = qr(msq("男性", "男性"), msq("女性", "女性"),
+                         msq("やめる", "やめる"))
+    return msg
+
+
+def _cancel_body(user_id: str) -> TextSendMessage:
+    _body_pending.pop(user_id, None)
+    return TextSendMessage(text="身体情報の登録を中止しました")
+
+
+def _finish_body_info(user_id: str, st: dict) -> TextSendMessage:
+    save_profile(user_id, sex=st.get("sex"), age=st.get("age"),
+                 height_cm=st.get("height"))
+    _body_pending.pop(user_id, None)
+    pr = body_profile(user_id)
+    sex_jp = {"male": "男性", "female": "女性"}.get(pr.get("sex"), "未設定")
+    h_txt = f"{pr['height_cm']:.0f}cm" if pr.get("height_cm") else "未設定"
+    lines = ["✅ 身体情報を登録しました",
+             f"性別 {sex_jp} / 年齢 {pr.get('age') or '未設定'} / 身長 {h_txt}"]
+    est = body_estimate_for_user(user_id)
+    if est:
+        lines += [
+            "",
+            f"📐 BMI: {est['bmi']:.1f}（{est['bmi_category']}）",
+            f"体脂肪率の推定: {est['body_fat_pct']:.1f}%（体重と身長から）",
+            f"　└ 体脂肪量 約{est['fat_mass_kg']:.1f}kg / 除脂肪量 約{est['lean_mass_kg']:.1f}kg",
+            "",
+            "※ BMIからの体脂肪率推定は誤差が大きい（±4%程度）ので、"
+            "体組成計の写真を送って実測値を入れるとより正確になります。",
+            "📈 マイ記録の「体脂肪率・筋肉量の推移」に反映されました",
+        ]
+    else:
+        lines.append("")
+        lines.append("体重を記録するとBMIと体脂肪率の推定が出せます")
+    return TextSendMessage(text="\n".join(lines))
+
+
+def handle_body_step(user_id: str, text: str) -> Optional[TextSendMessage]:
+    st = _body_pending.get(user_id)
+    if st is None:
+        return None
+    text = (text or "").strip()
+    if text in ("やめる", "キャンセル", "中止"):
+        return _cancel_body(user_id)
+    step = st["step"]
+    if step == "sex":
+        if text not in ("男性", "女性"):
+            msg = TextSendMessage(text="性別を選んでください（『やめる』で中止）")
+            msg.quick_reply = qr(msq("男性", "男性"), msq("女性", "女性"),
+                                 msq("やめる", "やめる"))
+            return msg
+        st["sex"] = "male" if text == "男性" else "female"
+        st["step"] = "age"
+        return TextSendMessage(text="年齢を数字で送ってください（例: 35）")
+    if step == "age":
+        try:
+            a = int(float(text))
+            if not (10 <= a <= 110):
+                raise ValueError
+        except ValueError:
+            return TextSendMessage(text="年齢は10〜110の数字で送ってください（例: 35）")
+        st["age"] = a
+        st["step"] = "height"
+        return TextSendMessage(text="身長を cm で送ってください（例: 172）")
+    if step == "height":
+        try:
+            h = float(text)
+            if not (80 <= h <= 250):
+                raise ValueError
+        except ValueError:
+            return TextSendMessage(text="身長は80〜250の数字で送ってください（例: 172）")
+        st["height"] = h
+        return _finish_body_info(user_id, st)
+    return _cancel_body(user_id)
