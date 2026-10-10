@@ -92,12 +92,14 @@ function loadLiffSdk(){
     </div>
     <div class="card">
       <b>⚖️ 体重推移（14日）</b>
-      <div class="kpi2" style="margin-top:6px;font-size:13px;line-height:1.9">
-        <div class="kpi-line"><span class="lbl">現在</span> <b id="wCurrent">—</b> <span class="muted" id="wCurrentDate"></span></div>
-        <div class="kpi-line"><span class="lbl">増減</span> <b id="wDelta">—</b> <span class="muted" id="wBaseDate"></span></div>
-        <div class="kpi-line" id="wTargetWrap" style="display:none"><span class="lbl">目標体重</span> <b id="wTarget">—</b></div>
-      </div>
-      <div class="kpi muted" id="wGoalInfo" style="margin-top:2px"></div>
+      <table class="bctab">
+        <tbody>
+          <tr><th>現在</th><td><b id="wCurrent">—</b> <span class="muted" id="wCurrentDate"></span></td></tr>
+          <tr><th>増減</th><td><b id="wDelta">—</b> <span class="muted" id="wBaseDate"></span></td></tr>
+          <tr id="wTargetWrap" style="display:none"><th>目標体重</th><td><b id="wTarget">—</b></td></tr>
+        </tbody>
+        <tbody id="wGoalInfo"></tbody>
+      </table>
       <canvas id="weightChart" height="130"></canvas>
     </div>
 

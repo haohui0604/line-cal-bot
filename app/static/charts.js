@@ -125,30 +125,29 @@
       try {
         var _gi = document.getElementById("wGoalInfo");
         if (_gi) {
-          var _p = [];
+          var _rows = [];
           if (d && d.goal_set_at) {
-            _p.push("設定日: " + d.goal_set_at + (d.goal_set_at_estimated ? "（推定）" : ""));
+            _rows.push(["設定日", d.goal_set_at + (d.goal_set_at_estimated ? "（推定）" : "")]);
           }
           if (d && d.goal_target_date) {
-            var _l = "期限: " + d.goal_target_date;
+            var _l = d.goal_target_date;
             if (typeof d.goal_days_left === "number") {
               _l += (d.goal_days_left >= 0
                 ? "（あと " + d.goal_days_left + "日）"
                 : "（" + Math.abs(d.goal_days_left) + "日超過）");
             }
-            _p.push(_l);
+            _rows.push(["期限", _l]);
           }
           if (d && typeof d.goal_kg_left === "number") {
-            _p.push(d.goal_kg_left > 0
-              ? "残り " + d.goal_kg_left.toFixed(1) + " kg"
-              : "目標達成（" + Math.abs(d.goal_kg_left).toFixed(1) + " kg 超過）");
+            _rows.push(["残り", d.goal_kg_left > 0
+              ? d.goal_kg_left.toFixed(1) + " kg"
+              : "達成（" + Math.abs(d.goal_kg_left).toFixed(1) + " kg 超過）"]);
           }
           if (d && typeof d.goal_pace_week === "number") {
-            _p.push("ペース " + d.goal_pace_week.toFixed(2) + " kg/週");
+            _rows.push(["ペース", d.goal_pace_week.toFixed(2) + " kg/週"]);
           }
-          var _lines = [[_p[0]], [_p[1]], _p.slice(2)].filter(function (a) { return a && a.length; });
-          _gi.innerHTML = _lines.map(function (a) {
-            return '<span class="gi-line">' + a.join('<span class="gi-sep">／</span>') + '</span>';
+          _gi.innerHTML = _rows.map(function (r) {
+            return '<tr><th>' + r[0] + '</th><td>' + r[1] + '</td></tr>';
           }).join('');
           if (d && d.goal_overdue && !d.goal_achieved) _gi.style.color = "#ef4444";
         }
