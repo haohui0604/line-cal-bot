@@ -30,6 +30,9 @@ function loadLiffSdk(){
   header{background:var(--card);border-bottom:1px solid var(--line);
          padding:14px 16px;font-weight:700;display:flex;align-items:center;
          justify-content:space-between}
+  header .hlinks{display:flex;gap:12px;align-items:center;font-weight:400;font-size:13px}
+  header .manuallink{color:var(--muted);text-decoration:none;border:1px solid var(--line);
+                     border-radius:999px;padding:4px 10px;white-space:nowrap}
   header .trainer-link{font-weight:400;font-size:13px;display:none}
   header .trainer-link a{color:var(--accent);text-decoration:none}
   main{max-width:640px;margin:0 auto;padding:16px}
@@ -53,8 +56,11 @@ function loadLiffSdk(){
 </head>
 <body>
 <header>📊 マイ記録
-  <span class="trainer-link" id="trainerLink">
-    <a href="/trainer">🧑‍🏫 トレーナー画面</a></span>
+  <span class="hlinks">
+    <a class="manuallink" href="/static/manual.html" target="_blank" rel="noopener">📖 使い方</a>
+    <span class="trainer-link" id="trainerLink">
+      <a href="/trainer">🧑‍🏫 トレーナー画面</a></span>
+  </span>
 </header>
 <main>
   <div id="err"></div>
