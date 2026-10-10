@@ -21,6 +21,7 @@ if not settings.LIFF_ID:
     raise SystemExit("環境変数 LIFF_ID が未設定です")
 
 liff_url = f"https://liff.line.me/{settings.LIFF_ID}"
+manual_url = f"{settings.BASE_URL.rstrip('/')}/static/manual.html"
 
 
 def pb_area(x, y, label, data, display_text=None):
@@ -42,8 +43,11 @@ menu = RichMenu(
         pb_area(1250, 0, "初期設定", "cmd=goal", "初期設定"),
         # 左下: AI人格設定（既存コマンド）
         pb_area(0, 843, "AI人格設定", "cmd=persona", "人格設定"),
-        # 右下: 使い方（既存ヘルプ）
-        pb_area(1250, 843, "使い方", "cmd=help", "使い方"),
+        # 右下: 使い方（マニュアルをWebで開く）
+        RichMenuArea(
+            bounds=RichMenuBounds(x=1250, y=843, width=1250, height=843),
+            action=URIAction(label="使い方",
+                             uri=f"{settings.BASE_URL.rstrip('/')}/static/manual.html")),
     ],
 )
 
@@ -72,3 +76,4 @@ with open(_img_path, "rb") as f:          # 2500x1686 / PNG / 1MB以下
 api.set_default_rich_menu(rid)
 print("done:", rid)
 print("マイページURL:", liff_url)
+print("使い方（マニュアル）URL:", manual_url)
