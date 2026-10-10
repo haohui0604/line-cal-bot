@@ -476,16 +476,23 @@ def handle_step(user_id: str, text: str) -> Optional[TextSendMessage]:
         except ValueError:
             return TextSendMessage(
                 text="期間はボタンから選ぶか、日数（7〜730）で送ってください")
-        if _activity_avg_7d(user_id) is not None:
+        _act = _activity_avg_7d(user_id)
+        _bi = body_profile(user_id)
+        if _act is not None and _bi.get("complete"):
+            # 身体情報が登録済みのときだけ活動量の実績で確定へ進む
+            st["sex"] = _bi.get("sex")
+            st["age"] = _bi.get("age")
+            st["height"] = _bi.get("height_cm")
             return _finish_weight(user_id, st)
         st["step"] = "sex"
-        msg = TextSendMessage(text=(
-            "活動量のデータがまだ無いので、身体情報から消費カロリーを推定します。\n"
-            "性別を教えてください"))
-
+        if _act is not None:
+            _head = ("身体情報（性別・年齢・身長）を登録すると、"
+                     "BMIと体脂肪率の推定も出せます。\n")
+        else:
+            _head = "活動量のデータがまだ無いので、身体情報から消費カロリーを推定します。\n"
+        msg = TextSendMessage(text=_head + "性別を教えてください")
         msg.quick_reply = qr(msq("男性", "男性"), msq("女性", "女性"))
         return msg
-
     if step == "sex":
         if text not in ("男性", "女性"):
             msg = TextSendMessage(text="性別を選んでください")
@@ -497,17 +504,23 @@ def handle_step(user_id: str, text: str) -> Optional[TextSendMessage]:
 
     if step == "age":
         try:
-            st["age"] = int(float(text))
+            _a = int(float(text))
         except ValueError:
             return TextSendMessage(text="数字で送ってください（例: 35）")
+        if not (10 <= _a <= 110):
+            return TextSendMessage(text="年齢は10〜110の数字で送ってください（例: 35）")
+        st["age"] = _a
         st["step"] = "height"
         return TextSendMessage(text="身長を cm で送ってください（例: 172）")
 
     if step == "height":
         try:
-            st["height"] = float(text)
+            _h = float(text)
         except ValueError:
             return TextSendMessage(text="数字で送ってください（例: 172）")
+        if not (80 <= _h <= 250):
+            return TextSendMessage(text="身長は80〜250の数字で送ってください（例: 172）")
+        st["height"] = _h
         return _finish_weight(user_id, st)
 
     if step == "salt_confirm":

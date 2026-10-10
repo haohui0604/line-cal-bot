@@ -25,36 +25,74 @@ def _seed_activity(user_id, total_kcal):
             (user_id, "2026-09-29", total_kcal, "manual"))
 
 
+def _seed_activity_recent(uid, kcal):
+    """直近7日に入るよう今日の日付で活動量を入れる（NOT NULL列は自動で埋める）."""
+    from app.services.dates import today_jst
+    with get_conn() as c:
+        cols = {r[1]: (r[2], r[3], r[4]) for r in c.execute("PRAGMA table_info(activity)")}
+        vals = {"user_id": uid, "date": today_jst(), "total_kcal": kcal,
+                "source_type": "manual"}
+        for name, (typ, notnull, dflt) in cols.items():
+            if name not in vals and notnull and dflt is None:
+                vals[name] = 0 if ("INT" in (typ or "") or "REAL" in (typ or "")) else ""
+        c.execute("INSERT INTO activity (%s) VALUES (%s)"
+                  % (",".join(vals), ",".join("?" * len(vals))), list(vals.values()))
+
+
 def test_weight_wizard_with_activity_data():
-    """活動量データがある人は性別・年齢・身長を聞かれない."""
+    """活動量データがあっても、身体情報が未登録なら性別・年齢・身長を聞く."""
     uid = "UG1"
-    _seed_activity(uid, 2400)
-    # 体重データも直接投入
+    _seed_activity_recent(uid, 2400)
     with get_conn() as c:
         c.execute(
             "INSERT OR REPLACE INTO weight_logs"
             " (user_id, date, weight_kg, is_measured) VALUES (?,?,?,1)",
             (uid, "2026-09-29", 75.0))
 
-    msg = goals.start_wizard(uid)
-    assert msg.quick_reply is not None          # 目的はボタン選択
-    assert goals.in_wizard(uid)
-
-    r = goals.handle_step(uid, "減量")          # 体重データあり→目標体重へ直行
+    assert goals._activity_avg_7d(uid) == 2400.0
+    goals.start_wizard(uid)
+    r = goals.handle_step(uid, "減量")
     assert "目標体重" in r.text
     r = goals.handle_step(uid, "65")
-    assert r.quick_reply is not None            # 期間はボタン
+    assert r.quick_reply is not None
     r = goals.handle_step(uid, "期間 60")
-    assert "目標確定" not in r.text and "計算結果" in r.text
-    assert "2400" in r.text                     # 実績の消費カロリーが使われた
+    assert "性別" in r.text and "計算結果" not in r.text   # 身体情報を先に聞く
+    assert goals._pending[uid]["step"] == "sex"
+    r = goals.handle_step(uid, "男性")
+    assert "年齢" in r.text
+    r = goals.handle_step(uid, "40")
+    assert "身長" in r.text
+    r = goals.handle_step(uid, "170")
+    assert "計算結果" in r.text and "活動量の実績" in r.text
     r = goals.handle_step(uid, "目標確定")
     assert "設定しました" in r.text
     p = goals.get_profile(uid)
     assert p["goal_mode"] == "weight"
     # 赤字 = 10kg*7200/60 = 1200 → 目標 = 2400-1200 = 1200
     assert p["calc_target_kcal"] == 1200
-    assert "減量" in goals.context_line(uid)
-    assert not goals.in_wizard(uid)             # ウィザード終了
+    assert p["sex"] == "male" and p["age"] == 40 and p["height_cm"] == 170.0
+    assert not goals.in_wizard(uid)
+
+
+def test_weight_wizard_skips_questions_when_profile_exists():
+    """身体情報が登録済みなら再質問せず、活動量の実績で確定する."""
+    uid = "UG1B"
+    _seed_activity_recent(uid, 2400)
+    with get_conn() as c:
+        c.execute(
+            "INSERT OR REPLACE INTO weight_logs"
+            " (user_id, date, weight_kg, is_measured) VALUES (?,?,?,1)",
+            (uid, "2026-09-29", 75.0))
+    goals.start_body_info(uid)
+    for tx in ("男性", "40", "170"):
+        goals.handle_body_step(uid, tx)
+    assert goals.body_profile(uid)["complete"] is True
+    goals.start_wizard(uid)
+    goals.handle_step(uid, "減量")
+    goals.handle_step(uid, "65")
+    r = goals.handle_step(uid, "期間 60")
+    assert "計算結果" in r.text and "性別" not in r.text
+    assert "活動量の実績" in r.text
 
 
 def test_weight_wizard_estimated_from_body():
