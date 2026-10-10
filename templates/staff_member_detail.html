@@ -1,0 +1,219 @@
+{% extends "base.html" %}
+{% block title %}{{ member_name }} の記録{% endblock %}
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script src="/static/charts.js"></script>
+<style>
+  .tabs{display:flex;gap:8px;margin:14px 0}
+  .tabs button{flex:1;padding:10px;border:1px solid var(--line);background:#fff;
+               border-radius:8px;font-size:14px;cursor:pointer}
+  .tabs button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+</style>
+{% endblock %}
+{% block content %}
+<p><a href="/trainer" class="muted">← 担当会員一覧に戻る</a></p>
+<h2>{{ member_name }}</h2>
+<div class="card" style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+  <span id="pgRange" class="muted" style="font-size:13px">{{ nav.range if nav else "" }}</span>
+  <span>
+    {% if nav and nav.show_future %}
+    <a id="pgFuture" href="{{ nav.future_href }}" style="text-decoration:none;font-weight:700;font-size:15px">未来 ＞</a>
+    {% else %}<span style="width:64px;display:inline-block"></span>{% endif %}
+    {% if nav and nav.show_past %}
+    <a id="pgPast" href="{{ nav.past_href }}" style="text-decoration:none;font-weight:700;font-size:15px">＜ 過去</a>
+    {% else %}<span style="width:64px;display:inline-block"></span>{% endif %}
+  </span>
+</div>
+{% if goal %}
+<div class="card"><span class="badge badge-green">目的: {{ goal.label }}</span>
+  {% if goal.detail %}<span class="muted">　{{ goal.detail }}</span>{% endif %}</div>
+{% endif %}
+
+{# === 会員画面(/me)と同じ構成: 今日の収支 → 日別ボタン → 推移3枚 → タブ === #}
+<div class="card">
+  <div class="muted">今日の収支（{{ today }}）</div>
+  <div class="stat">{{ "%.0f"|format(summary.get("intake_kcal") or 0) }} kcal 摂取
+    <span class="muted">/</span>
+    {{ "%.0f"|format(summary.get("burn_kcal") or summary.get("burn") or 0) }} kcal 消費</div>
+  {% set _in = (summary.get("intake_kcal") or 0) %}
+  {% set _bu = (summary.get("burn_kcal") or summary.get("burn") or 0) %}
+  {% set _tg = summary.get("target_kcal") %}
+  {% set _d = ((_in - _tg)|round(0)|int) if _tg else 0 %}
+  <div class="muted" style="margin-top:6px">収支（摂取－消費）：<b>{{ ("%+d"|format((_in - _bu)|round(0)|int))|replace("-", "−") }} kcal</b></div>
+  <div class="muted">目標との差（摂取－目標）：<b>{% if _tg %}<span style="color:{{ '#ef4444' if _d > 0 else '#10b981' }}">{{ '±0 kcal' if _d == 0 else ((('%+d'|format(_d))|replace('-', '−')) ~ ' kcal') }}</span>{% else %}未設定{% endif %}</b></div>
+  <div class="muted">P {{ "%.0f"|format(summary.get("protein_g") or 0) }}g ・
+    F {{ "%.0f"|format(summary.get("fat_g") or 0) }}g ・
+    C {{ "%.0f"|format(summary.get("carb_g") or 0) }}g</div>
+</div>
+
+<div class="card" style="text-align:center">
+  <a class="btn" href="/day?member_id={{ member_id }}"
+     style="display:inline-block;padding:12px 20px;font-weight:700;text-decoration:none">
+     📅 日別の詳細を見る（日ごとの記録・AIコメント・日単位コメント）</a>
+  <p class="muted" style="margin:8px 0 0">※ 記録の追加・修正・削除は会員本人のみ行えます</p>
+</div>
+
+<div class="card">
+  <b>📈 カロリー推移（14日）</b>
+  <canvas id="calChart" height="160"></canvas>
+</div>
+<div class="card">
+  <b>⚖️ 体重推移（14日）</b>
+  <div class="pfc-line" style="margin-top:4px">
+    現在の体重: <b id="wCurrent">—</b>
+    <span class="muted" id="wCurrentDate"></span>
+    　／　増減（期間初日比）: <b id="wDelta">—</b>
+    <span class="muted" id="wBaseDate"></span>
+    <span id="wTargetWrap" style="display:none">　／　目標体重: <b id="wTarget">—</b></span>
+  </div>
+  <canvas id="weightChart" height="130"></canvas>
+</div>
+<div class="card">
+  <b>🧍 体脂肪率・筋肉量の推移</b>
+  <div class="pfc-line" style="margin-top:4px">
+    体脂肪率: <b id="bcFat">—</b><span class="muted" id="bcFatDelta"></span>
+    　／　BMI: <b id="bcBmi">—</b><span class="muted" id="bcBmiCat"></span>
+  </div>
+  <div class="pfc-line">
+    筋肉量（実測）: <b id="bcMuscle">—</b>
+    　／　除脂肪量（推定）: <b id="bcEst">—</b>
+    　／　体脂肪量: <b id="bcFatMass">—</b>
+  </div>
+  <div class="muted" id="bcNote" style="margin:4px 0 0"></div>
+  <canvas id="bfChart" height="120"></canvas>
+  <canvas id="muChart" height="130"></canvas>
+</div>
+<div class="card">
+  <b>🥧 PFCバランス推移（14日・%）</b>
+  <canvas id="pfcChart" height="140"></canvas>
+</div>
+
+<div class="card">
+  <b>⭐ 指導方針（AIコーチに反映中）</b>
+  <div id="dirList" class="muted" style="margin-top:6px">読み込み中…</div>
+  <p class="muted" style="margin-top:6px">コメント送信時に「⭐ 翌日以降のAIコメントにも反映する」を
+    チェックした内容が、直近28日ぶん反映されます（新しい方針が優先）。</p>
+</div>
+
+<div class="tabs">
+  <button id="tabComments" class="on">💬 コメント</button>
+  <button id="tabHistory">🍽 履歴</button>
+</div>
+
+<div id="paneComments">
+  <div class="card">
+    <b>💬 コメントを送る</b>
+    <form method="post" action="/trainer/members/{{ member_id }}/comments">
+      <textarea name="body" required
+        placeholder="例: 夕食のバランス◎。タンパク質をあと一品足すと完璧です"></textarea>
+      <label class="muted" style="display:block;margin:8px 0">
+        <input type="checkbox" name="is_directive">
+        ⭐ 翌日以降のAIコメントにも反映する（指導方針として記録）
+      </label>
+      <button class="btn" type="submit">送信（会員のLINEに通知）</button>
+    </form>
+  </div>
+  <div class="card">
+    <b>🕘 コメント履歴</b>
+    {% if not comments %}<p class="muted">まだコメントはありません。</p>{% endif %}
+    {% for cm in comments %}
+    <div style="border-bottom:1px solid var(--line);padding:10px 0">
+      {% if cm.author_type == "trainer" %}
+        <span class="badge">トレーナー</span>
+      {% else %}
+        <span class="badge badge-green">AIコーチ</span>
+      {% endif %}
+      {% if cm.is_directive %}<span class="badge badge-green">⭐方針</span>{% endif %}
+      <span class="muted">{{ cm.created_at }}</span>
+      <div style="margin-top:4px;white-space:pre-wrap">{{ cm.body }}</div>
+    </div>
+    {% endfor %}
+    {% if cm_has_more %}
+    <p style="margin-top:10px">
+      <a class="btn btn-ghost btn-sm" href="?cm_offset={{ cm_offset + 30 }}">もっと見る（{{ cm_offset + 30 }} / {{ cm_total }}）</a>
+    </p>
+    {% elif cm_total %}
+    <p class="muted" style="margin-top:10px">全 {{ cm_total }} 件を表示しました</p>
+    {% endif %}
+  </div>
+</div>
+
+<div id="paneHistory" class="card" style="display:none">
+  <b>🍽 最近の記録</b>
+  {% if not entries %}<p class="muted">記録はまだありません。</p>{% endif %}
+  <table>
+    <tr><th>日付</th><th>区分</th><th>内容</th><th>kcal</th></tr>
+    {% for e in entries %}
+    <tr>
+      <td class="muted">{{ e.date }}</td>
+      <td>{{ e.meal_slot }}</td>
+      <td>{{ e.food_name }}</td>
+      <td>{{ "%.0f"|format(e.kcal or 0) }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+
+<script>
+(async () => {
+  const res = await fetch("/api/trainer/members/{{ member_id }}/summary?days=14&offset={{ offset }}");
+  if (res.ok) {
+    const d = await res.json();
+    CalCharts.calorie(document.getElementById("calChart"), d);
+    CalCharts.weight(document.getElementById("weightChart"), d);
+    CalCharts.weightText({}, d);
+    CalCharts.bodyFat(document.getElementById("bfChart"), d);
+    CalCharts.muscle(document.getElementById("muChart"), d);
+    CalCharts.bodyCompText(d);
+
+    new Chart(document.getElementById("pfcChart"), {
+      type: "bar",
+      data: { labels: d.labels, datasets: [
+        { label: "P", data: d.pfc_p, backgroundColor: "#06c755" },
+        { label: "F", data: d.pfc_f, backgroundColor: "#f59e0b" },
+        { label: "C", data: d.pfc_c, backgroundColor: "#3b82f6" }
+      ]},
+      options: { responsive: true, scales: {
+        x: { stacked: true }, y: { stacked: true, max: 100,
+          ticks: { callback: v => v + "%" } } } }
+    });
+  }
+  document.getElementById("tabComments").onclick = () => sw(true);
+  document.getElementById("tabHistory").onclick = () => sw(false);
+  function sw(c){
+    document.getElementById("paneComments").style.display = c ? "" : "none";
+    document.getElementById("paneHistory").style.display = c ? "none" : "";
+    document.getElementById("tabComments").className = c ? "on" : "";
+    document.getElementById("tabHistory").className = c ? "" : "on";
+  }
+})();
+
+  async function loadDirectives(){
+    const box = document.getElementById("dirList"); if(!box) return;
+    const r = await fetch("/api/gym/directives/{{ member_id }}");
+    const j = await r.json().catch(function(){ return {}; });
+    if(!r.ok){ box.textContent = j.detail || "読み込みに失敗しました"; return; }
+    if(!j.directives.length){
+      box.textContent = "⭐方針として記録された指導はまだありません";
+      return;
+    }
+    box.innerHTML = j.directives.map(function(d){
+      return '<div style="border-bottom:1px solid var(--line);padding:8px 0">'
+        + '<div class="muted">' + (d.created_at || "") + '</div>'
+        + '<div style="white-space:pre-wrap">' + dirEsc(d.body) + '</div>'
+        + '<button class="btn btn-ghost" onclick="toggleDirective(' + d.id + ', false)">反映を解除</button>'
+        + '</div>';
+    }).join("");
+  }
+  function dirEsc(v){ const d = document.createElement("div"); d.textContent = v == null ? "" : v; return d.innerHTML; }
+  async function toggleDirective(id, on){
+    if(!confirm("この指導方針のAI反映を解除しますか？")) return;
+    const r = await fetch("/api/gym/directive/toggle", {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({comment_id: id, on: on})});
+    if(!r.ok){ const j = await r.json().catch(function(){ return {}; }); alert(j.detail || "更新に失敗しました"); return; }
+    loadDirectives();
+  }
+  loadDirectives();
+</script>
+{% endblock %}
