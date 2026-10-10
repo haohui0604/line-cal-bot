@@ -138,6 +138,7 @@ def day_data(body: DayDataIn, request: Request):
     data = build_day_data(uid, target)
     data["ai_comment"] = get_day_comment(uid, target)
     data["trainer_comments"] = gym_db.fetch_comments_for_date(uid, target)
+    data["has_trainer"] = bool(gym_db.has_trainer(uid))
     return data
 
 
@@ -233,29 +234,50 @@ def day_entry_ops(body: EntryOpIn, request: Request):
         return {"ok": True}
 
     if body.action == "question":
-        # トレーナーへの質問（本人のみ。コメントとして保存し担当Tへ通知）
-        if not body.entry_id:
-            raise HTTPException(status_code=400, detail="entry_id が必要です")
+        # トレーナーへの質問（本人のみ）。基本は「日ごと」＝ entry_id 不要。
+        # entry_id を付けた場合はその品目についての質問として扱う（後方互換）。
         text = (body.body or "").strip()
         if not text:
             raise HTTPException(status_code=400, detail="質問内容が空です")
-        entry = fetch_entry_for_user(uid, body.entry_id)
-        if not entry:
-            raise HTTPException(status_code=404, detail="記録が見つかりません")
-        qdate = entry.get("date") or body.date or jst_dates.today_jst()
+        if not gym_db.has_trainer(uid):
+            raise HTTPException(
+                status_code=400,
+                detail="担当トレーナーが設定されていないため、質問は送信できません")
+        food_label = None
+        if body.entry_id:
+            entry = fetch_entry_for_user(uid, body.entry_id)
+            if not entry:
+                raise HTTPException(status_code=404, detail="記録が見つかりません")
+            qdate = entry.get("date") or body.date or jst_dates.today_jst()
+            food_label = entry.get("food_name")
+        else:
+            qdate = (body.date or "").strip() or jst_dates.today_jst()
+            try:
+                parsed_q = datetime.strptime(qdate, "%Y-%m-%d").date()
+            except ValueError:
+                raise HTTPException(
+                    status_code=400,
+                    detail="日付は YYYY-MM-DD 形式で指定してください")
+            if parsed_q > jst_dates.today_jst_date():
+                raise HTTPException(
+                    status_code=400, detail="未来の日付には質問できません")
+            qdate = parsed_q.isoformat()
+        headline = (f"❓ {food_label}（{qdate}）についての質問"
+                    if food_label else f"❓ {qdate} の記録についての質問")
         gym_db.add_comment(
-            user_id=uid,
-            body=f"❓ {entry['food_name']}（{qdate}）についての質問\n{text}",
+            user_id=uid, body=f"{headline}\n{text}",
             author_type="member", author_id=uid,
             target_date=qdate, is_directive=False)
         trainer_id = gym_db.get_member_trainer(uid)
         if trainer_id:
             me = gym_db.get_user(uid) or {}
+            tail = (f"{qdate} / {food_label}" if food_label else f"{qdate} の記録")
             _push_to_member(
                 trainer_id,
                 f"❓ {me.get('display_name') or '会員'} さんから質問が届きました\n"
-                f"{qdate} / {entry['food_name']}\n\n{text}")
-        return {"ok": True, "pushed": bool(trainer_id)}
+                f"{tail}\n\n{text}")
+        return {"ok": True, "pushed": bool(trainer_id), "date": qdate,
+                "scope": "entry" if food_label else "day"}
 
     if body.action == "delete":
         if not body.entry_id:

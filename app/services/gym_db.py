@@ -469,6 +469,11 @@ def get_member_trainer(user_id: str) -> Optional[str]:
     return r["trainer_id"] if r else None
 
 
+def has_trainer(user_id: str) -> bool:
+    """会員に担当トレーナーが設定されているか（表示の出し分け用）."""
+    return bool(get_member_trainer(user_id))
+
+
 def list_members_for_gym(gym_id: int) -> List[Dict[str, Any]]:
     """ジムの active 会員一覧（オーナーの管理画面用）."""
     with get_conn() as c:

@@ -90,7 +90,14 @@ function loadLiffSdk(){return new Promise((res,rej)=>{const s=document.createEle
   <div id="loading" class="loading">読み込み中…</div>
   <div id="app" style="display:none">
 
-    <div class="card">
+    {% if not can_comment %}
+    <div class="card" id="askCard" style="display:none;align-items:center;gap:10px;flex-wrap:wrap">
+  <b>この日の記録について</b>
+  <button class="btn btn-ghost btn-sm" onclick="askDayQ()">❓ トレーナーに質問</button>
+  <span class="muted">1日単位でまとめて質問できます（食事ごとではありません）</span>
+</div>
+    {% endif %}
+<div class="card">
       <b>🤖 AIコーチ</b>
       <div class="muted" style="margin-top:4px">この日のデータを見たAIの見立て</div>
       <div id="aiComment" style="margin-top:6px;white-space:pre-wrap">…</div>
@@ -155,19 +162,25 @@ function loadLiffSdk(){return new Promise((res,rej)=>{const s=document.createEle
       {% endif %}
     </div>
 
+    {% if can_comment %}
     <div class="card">
       <b>💬 トレーナーコメント</b>
       <div class="muted" style="margin-top:4px">この日の記録に対するコメント</div>
       <div id="trainerComments"></div>
-      {% if member_id %}
       <textarea id="commentBody" placeholder="この日の記録へのコメント" style="margin-top:8px"></textarea>
       <label class="muted" style="display:block;margin:6px 0">
         <input type="checkbox" id="commentDirective" style="width:auto">
         ⭐ 翌日以降のAIコメントにも反映する
       </label>
       <button class="btn" onclick="postComment()">送信（会員のLINEに通知）</button>
-      {% endif %}
     </div>
+    {% else %}
+    <div class="card" id="cmtCard" style="display:none">
+      <b>💬 トレーナーコメント</b>
+      <div class="muted" style="margin-top:4px">この日の記録に対するコメント</div>
+      <div id="trainerComments"></div>
+    </div>
+    {% endif %}
   </div>
 </main>
 
@@ -338,7 +351,6 @@ function render(d){
           + (e.salt_g ? ' 塩'+e.salt_g+'g' : '')+'</span>'
           + (CAN_EDIT ? '<span class="acts">'
           + '<button class="btn btn-ghost btn-sm" onclick="editNote(this,'+e.id+')">📝</button>'
-          + '<button class="btn btn-ghost btn-sm" onclick="askQ(this,'+e.id+')">❓</button>'
           + '<button class="btn btn-ghost btn-sm" onclick="startEdit(this,'+e.id+')">修正</button>'
           + '<button class="btn btn-ghost btn-sm" onclick="delEntry('+e.id+')">削除</button>'
           + '</span>' : '')
@@ -349,6 +361,12 @@ function render(d){
     area.innerHTML = html;
   }
 
+  // __gate_trainer__: トレーナー未設定なら質問ボタン/コメント欄を隠す
+  var _ht = !!d.has_trainer;
+  var _ac = document.getElementById("askCard");
+  if(_ac) _ac.style.display = _ht ? "flex" : "none";
+  var _cc = document.getElementById("cmtCard");
+  if(_cc) _cc.style.display = _ht ? "block" : "none";
   // トレーナーコメント
   const tc = document.getElementById("trainerComments");
   const list = d.trainer_comments || [];
@@ -392,11 +410,12 @@ async function editNote(btn, id){
   catch(e){ showErr("メモの保存に失敗: "+e.message); }
 }
 
-async function askQ(btn, id){
-  const v = prompt("トレーナーへの質問（この記録について）", "");
+async function askDayQ(){
+  const v = prompt("トレーナーへの質問（この日の記録について）", "");
   if(v === null || !v.trim()) return;
   try{
-    const r = await api("/api/day/entries", {action:"question", entry_id:id, body:v.trim()});
+    const _qd = document.getElementById('datePicker').value;
+    const r = await api("/api/day/entries", {action:"question", date:_qd, body:v.trim()});
     alert(r.pushed ? "トレーナーに送信しました"
                    : "質問を保存しました（担当トレーナー未設定のため通知は未送信）");
     load();

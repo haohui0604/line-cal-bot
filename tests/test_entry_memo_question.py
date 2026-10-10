@@ -10,6 +10,13 @@ os.environ["GEMINI_API_KEY"] = ""
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pytest
+
+@pytest.fixture(autouse=True)
+def _assume_trainer(monkeypatch):
+    """旧テストは担当トレーナーあり前提（Phase12で未設定時は質問を不可に）."""
+    from app.services import gym_db as _gdb
+    monkeypatch.setattr(_gdb, "has_trainer", lambda u: True)
+
 from fastapi.testclient import TestClient
 
 from app.services.db import init_db
@@ -110,6 +117,9 @@ def test_question_pushes_to_assigned_trainer(client, monkeypatch):
 
 
 def test_question_other_user_entry_rejected(client, monkeypatch):
+    from app.services import gym_db as _gdb
+    monkeypatch.setattr(_gdb, "has_trainer", lambda u: True)
+
     _as(monkeypatch, "Unote_other")
     r = _question(client, "Unote_other", "他人の記録に質問")
     assert r.status_code == 404
@@ -117,7 +127,15 @@ def test_question_other_user_entry_rejected(client, monkeypatch):
     assert all("他人の記録に質問" not in c["body"] for c in cms)
 
 
-def test_template_has_note_and_question_buttons():
+def test_template_has_note_and_day_question_buttons():
+    """自分メモ（品目ごと）と、トレーナーへの質問（日ごと）のUIを確認する."""
     html = Path("app/templates/day_detail.html").read_text(encoding="utf-8")
-    assert "editNote" in html and "askQ" in html
-    assert "data-note" in html and '"question"' in html and '"memo"' in html
+    # メモは従来どおり品目ごと
+    assert "editNote" in html and "data-note" in html and '"memo"' in html
+    # 質問は日ごと（entry_id ではなく date を送る）
+    assert "askDayQ" in html
+    assert 'action:"question", date:' in html
+    # 質問では entry_id を送らない（メモは従来どおり品目ごと＝entry_id を送る）
+    assert 'action:"question", entry_id' not in html
+    # 品目ごとの質問ボタンは廃止
+    assert 'onclick="askQ(' not in html
