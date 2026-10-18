@@ -630,7 +630,8 @@ def weekly_trend(gym_id: int, weeks: int = 8) -> List[Dict[str, Any]]:
 # ---- 記録の質 ----
 
 SOURCE_JP = {"llm_estimate": "テキスト推定", "ocr_label": "成分表",
-             "ocr_photo": "写真", "photo": "写真", "manual": "手入力"}
+             "ocr_photo": "写真", "photo": "写真", "manual": "手入力",
+             "repeat_copy": "同じ食事", "user_report": "テキスト推定"}
 
 
 def data_quality(gym_id: int, days: int = 90) -> Dict[str, Any]:
@@ -726,6 +727,7 @@ def trainer_overview(staff_id: str, days: int = DEFAULT_WINDOW) -> Dict[str, Any
     from app.services import goals as _goals
 
     def _target(uid):
+        """目標摂取kcal。goals → goal_profiles → PFC計算値 の順に探す。"""
         try:
             t = get_goal(uid, end)
             if t:
@@ -736,6 +738,16 @@ def trainer_overview(staff_id: str, days: int = DEFAULT_WINDOW) -> Dict[str, Any
             p = _goals.get_profile(uid) or {}
             if p.get("calc_target_kcal"):
                 return float(p["calc_target_kcal"])
+            # 目的は設定済みでも kcal 目標が未計算のことがある（旧データ等）
+            if p.get("goal_mode"):
+                try:
+                    pt = _goals.pfc_targets(uid) or {}
+                except Exception:
+                    pt = {}
+                for k in ("target_kcal", "kcal", "calc_target_kcal"):
+                    v = pt.get(k) if isinstance(pt, dict) else None
+                    if v:
+                        return float(v)
         except Exception:
             pass
         return None
@@ -778,6 +790,8 @@ def trainer_overview(staff_id: str, days: int = DEFAULT_WINDOW) -> Dict[str, Any
             "target_kcal": round(tg) if tg is not None else None,
             "diff": diff,
             "goal_label": (badge or {}).get("label"),
+            "goal_set": bool(badge),
+            "goal_detail": (badge or {}).get("detail") or "",
             "light": w7 >= 1,
         }
         rows_out.append(row)

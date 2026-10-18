@@ -3,6 +3,8 @@ import logging
 import time
 import re
 from datetime import timedelta
+from app.config import settings
+_BASE_URL = settings.BASE_URL.rstrip('/')
 from app.handlers.flex_builder import daily_flex
 from app.handlers.button_builder import qr, pb
 from app.services.report_ai import build_daily_facts, generate_daily
@@ -21,6 +23,7 @@ from app.services.db import (
     fetch_recent_entries, delete_entry, delete_entries_by_date,
 )
 from app.services.calorie_calc import parse_record_line
+from app.services import repeat_meal, consult
 from app.services import goals as goal_svc
 from app.handlers.flex_builder import (
     summary_flex, weekly_chart_flex, monthly_summary_flex,
@@ -137,14 +140,17 @@ HELP_TEXT = (
     "\n"
     "【確認・整理】\n"
     "・『集計』『履歴』『週次』『月次』\n"
-    "・トレーナー／管理者の方: Webの https://oga-cal.onrender.com/trainer から管理画面に入れます（LINEログイン）\n"
+    f"・トレーナー／管理者の方: Webの {_BASE_URL}/trainer から管理画面に入れます（LINEログイン）\n"
     "・自分のジムを作る: このトークで「ジム作成 ジム名」と送信（管理者・トレーナー登録済みの方が利用できます）\n"
     "・『削除 3』→ 履歴の番号で1件削除\n"
     "・『削除 1/1』→ その日の食事を全削除\n"
     "・『目標 1800』→ 目標設定 /『目標』→ 確認\n"
     "\n"
     "【相談】\n"
-    "・『あと何kcal食べていい？』など自由文でAI相談"
+    "・『あと何kcal食べていい？』など自由文でAI相談（残りカロリー・PFCから具体メニューを提案）\n"
+    "・『ラーメン食べたらどう？』→ 食べる前にカロリー/PFCの過不足を計算して答えます\n"
+    "・『昨日の昼と同じ』『おとといの夕食と同じ』→ その時の食事をそのままコピー登録\n"
+    "・『先週の火曜の昼と同じ』『10/2の朝と同じ』→ 日付・曜日を指定してコピー"
 )
 
 SETUP_PURPOSES = {
@@ -1220,6 +1226,30 @@ def handle_text(user_id: str, text: str):
                  "kcal": f"{kcal:.0f}",
                  "タンパク質(g)": parsed.get("protein_g")},
                 tpl))
+
+        # 10.8) 「いついつの◯◯と同じ」→ 過去の食事をそのまま複製登録
+        if repeat_meal.looks_like_repeat(text):
+            _rep = repeat_meal.handle_repeat(user_id, text)
+            if _rep is not None:
+                return _rep
+
+        # 10.9a) 提案直後の操作（記録する／もっと軽く／やめとく）
+        if consult.is_proposal_followup(user_id, text):
+            _pf = consult.handle_followup(user_id, text)
+            if _pf is not None:
+                return _pf
+
+        # 10.9b) 「これ食べたらどう？」→ カロリー/PFCの過不足を評価
+        if consult.is_proposal(text):
+            _pr = consult.evaluate_proposal(user_id, text)
+            if _pr is not None:
+                return _pr
+
+        # 10.9c) 「今日あと何食べていい？」相談 → 実データから具体メニューを提案
+        if consult.is_consult(text):
+            _con = consult.propose(user_id, text)
+            if _con is not None:
+                return _con
 
         return _handle_llm(user_id, text)
 
